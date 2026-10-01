@@ -17,6 +17,7 @@ mod containers;
 mod files;
 mod logs;
 mod network;
+pub mod policy;
 mod processes;
 mod resources;
 mod services;
@@ -24,7 +25,9 @@ mod system;
 
 use chrono::{DateTime, Utc};
 use hostprint_model::{CollectorStatus, Snapshot};
+pub use policy::{Action, Policy, PolicyNote, PolicyRule, Thresholds};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// Version of the diff JSON format.
@@ -136,6 +139,9 @@ pub struct Change {
     /// Size of the change, e.g. "+17" or "-82%".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta: Option<String>,
+    /// Set when a policy changed the level the rule assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<PolicyNote>,
 }
 
 impl Change {
@@ -157,6 +163,7 @@ impl Change {
             before: None,
             after: None,
             delta: None,
+            policy: None,
         }
     }
 
@@ -241,8 +248,8 @@ impl Diff {
     }
 }
 
-/// Things to leave out of the comparison, from `[ignore]` in `config.toml`.
-/// Name lists accept `*` wildcards.
+/// How to compare: what to leave out (`[ignore]` in `config.toml`; name lists
+/// accept `*` wildcards) and the site's policy (`[policy]`, `--policy`).
 #[derive(Debug, Clone, Default)]
 pub struct DiffOptions {
     pub ignore_processes: Vec<String>,
@@ -250,6 +257,7 @@ pub struct DiffOptions {
     pub ignore_env: Vec<String>,
     pub ignore_containers: Vec<String>,
     pub ignore_services: Vec<String>,
+    pub policy: Policy,
 }
 
 pub fn diff(from: &Snapshot, to: &Snapshot, opts: &DiffOptions) -> Diff {
@@ -276,7 +284,7 @@ pub fn diff(from: &Snapshot, to: &Snapshot, opts: &DiffOptions) -> Diff {
         system::compare(a, b, ctx.changes);
     }
     if let Some((a, b)) = ctx.pair("resources", Category::Resources, |s| s.resources.as_ref()) {
-        resources::compare(a, b, ctx.changes);
+        resources::compare(a, b, &opts.policy.thresholds, ctx.changes);
     }
     if let Some((a, b)) = ctx.pair("processes", Category::Processes, |s| s.processes.as_ref()) {
         processes::compare(a, b, from.captured_at, to.captured_at, opts, ctx.changes);
@@ -306,6 +314,7 @@ pub fn diff(from: &Snapshot, to: &Snapshot, opts: &DiffOptions) -> Diff {
         logs::compare(a, b, from.captured_at, to.captured_at, ctx.changes, ctx.notes);
     }
 
+    apply_policy(&opts.policy, &mut changes, &mut notes);
     changes.sort_by(|a, b| {
         b.significance
             .cmp(&a.significance)
@@ -329,6 +338,40 @@ pub fn diff(from: &Snapshot, to: &Snapshot, opts: &DiffOptions) -> Diff {
         summary,
         notes,
         changes,
+    }
+}
+
+/// Applies policy rules: sets levels (recording the default) and removes
+/// changes that are turned off, noting how many.
+fn apply_policy(policy: &Policy, changes: &mut Vec<Change>, notes: &mut Vec<String>) {
+    if policy.rules.is_empty() {
+        return;
+    }
+    let mut off: BTreeMap<String, usize> = BTreeMap::new();
+    changes.retain_mut(|c| {
+        let Some(rule) = policy.find(c) else { return true };
+        match rule.action {
+            Action::Off => {
+                *off.entry(c.rule.clone()).or_default() += 1;
+                false
+            }
+            Action::Level(level) => {
+                if level != c.significance {
+                    c.policy = Some(PolicyNote { default: c.significance, matched: rule.describe() });
+                    c.significance = level;
+                }
+                true
+            }
+        }
+    });
+    if !off.is_empty() {
+        let total: usize = off.values().sum();
+        let detail: Vec<String> = off.iter().map(|(rule, n)| format!("{rule} ×{n}")).collect();
+        notes.push(format!(
+            "Policy turned off {total} {}: {}.",
+            if total == 1 { "change" } else { "changes" },
+            detail.join(", ")
+        ));
     }
 }
 

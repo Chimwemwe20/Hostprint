@@ -20,6 +20,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Build without the terminal UI
+        run: cargo clippy -p hostprint --no-default-features -- -D warnings
 
   static-binary:
     runs-on: ubuntu-latest
@@ -38,5 +40,44 @@ jobs:
           $bin capture --name a --quiet
           $bin capture --name b --quiet
           $bin diff a b
+          $bin report a b -o report.html
           $bin doctor
           ls -l $bin
+
+  # The macOS collectors are only compiled and run here.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy for Intel Macs
+        run: cargo clippy --workspace --all-targets --target x86_64-apple-darwin -- -D warnings
+      - run: cargo test --workspace
+      - name: Smoke test
+        run: |
+          cargo build --release
+          bin=target/release/hostprint
+          export HOSTPRINT_HOME="$RUNNER_TEMP/hostprint"
+          $bin doctor
+          $bin capture --name a
+          $bin capture --name b --quiet
+          $bin diff a b --all
+          $bin show a
+          $bin show a --section ports
+          $bin show a --section services | head -20
+          $bin report a b -o "$RUNNER_TEMP/hostprint/report.html"
+          ls -l $bin
+      - name: Upload the macOS snapshots and report for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-snapshots
+          path: |
+            ${{ runner.temp }}/hostprint/snapshots/*.hp
+            ${{ runner.temp }}/hostprint/report.html
+          if-no-files-found: ignore

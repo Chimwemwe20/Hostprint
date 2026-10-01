@@ -38,4 +38,58 @@
 - Docker-based development without a local Rust toolchain:
   `scripts/dev.ps1` / `scripts/dev.sh` (`check`, `test`, `build`, `run`,
   `demo`, `shell`) and a root `Dockerfile` that outputs the static binary.
-- Reproducible Docker demo in `examples/demo`, now with logs and a bundle.
+- Reproducible Docker demo in `examples/demo`, now with logs and a bundle
+  (`OUT=dir` keeps the bundle).
+- `hostprint tui`: browse snapshots and baselines, inspect a snapshot's
+  processes, ports, services, containers, disks, environment and logs with a
+  filter, compare two snapshots (or one with the live system), filter the
+  diff by level and category, inspect a change's rule and values, and write a
+  bundle.
+- `hostprint watch`: a live dashboard that captures on an interval and shows
+  resource gauges, service and container health (problems first), drift from
+  the first capture or a `--baseline`, and a timeline of state changes.
+- `hostprint report`: a standalone HTML report (inline CSS, no scripts, light
+  and dark) of a snapshot or of a comparison; `--format markdown` too.
+  Bundles now include `report.html`.
+- The terminal UI is behind the default `tui` cargo feature.
+- Diff policies: `[[policy.rules]]` in `config.toml` (or a `--policy` file)
+  set a rule's level or turn it off, by rule-id glob and optionally subject
+  glob; `[policy.thresholds]` moves the disk, memory and load limits. Adjusted
+  changes record their default level and the policy rule (`policy` in JSON,
+  marked in every output); changes turned off are counted in a note.
+- `hostprint policy show` (effective policy, warnings for entries matching no
+  rule) and `hostprint policy rules` (every rule id).
+- Capture over SSH: `hostprint capture ssh://[user@]host[:port]`, and
+  `ssh://` on either side of `diff` (`hostprint diff ssh://web-1
+  ssh://web-2`). Uses the system ssh client, streams the binary to a private
+  temporary directory and removes it afterwards; per-host fingerprint keys
+  keep secret changes comparable between captures of the same host.
+  `--remote-binary` sends a different build. Snapshots record
+  `capture.remote`.
+- `HOSTPRINT_*` variables are INFO in diffs.
+- macOS support (Apple Silicon and Intel): native collectors for the system
+  (`sysctl`), resources (`vm_stat`, swap usage, `top` CPU sampling, mounted
+  volumes), processes (`ps`), network (`netstat`, `lsof` owners, `route`,
+  `getifaddrs`) and services (launchd jobs from `launchctl list`). Docker,
+  Git, runtimes, environment, files and log files work as on Linux. `doctor`
+  checks the macOS tools. Snapshots record `host.kernelName`. Release builds
+  include macOS binaries, and CI runs the test suite and a smoke test on
+  macOS.
+- `scripts/dev.* check-macos` type-checks the macOS build without a Mac.
+
+### Fixed
+
+- Piping output into a command that exits early (`hostprint list | head`)
+  no longer panics with "Broken pipe".
+
+### Changed
+
+- Terminal and shell variables (`TERM`, `TERM_PROGRAM`, `COLORTERM`, `SHELL`)
+  are INFO in diffs: they describe where Hostprint was started from, not the
+  system.
+- `process.uninterruptible` and `process.zombies` need a real jump (×3 and
+  ×2) and count only processes older than a minute, so ordinary I/O waits on
+  a busy machine no longer register.
+- macOS session variables (`XPC_SERVICE_NAME`, `XPC_FLAGS`,
+  `__CFBundleIdentifier`, `SECURITYSESSIONID`, `LaunchInstanceID`) are INFO in
+  diffs, and launchd jobs starting and stopping on demand are INFO.

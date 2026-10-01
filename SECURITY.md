@@ -13,10 +13,23 @@ security bugs and are welcome as reports.
 
 ## What Hostprint does and does not do
 
-**It stays local.** Hostprint makes no network connections. The only socket it
-opens is the local Docker Engine socket, when one exists. There is no
-telemetry, no update check, and no upload; snapshots leave the machine only if
-you copy them.
+**It stays local.** Hostprint makes no network connections of its own. The
+only socket it opens is the local Docker Engine socket, when one exists. There
+is no telemetry, no update check, and no upload; snapshots leave the machine
+only if you copy them. The one exception is the one you ask for: capturing
+`ssh://host` runs your system `ssh` client to that host.
+
+**Remote capture leaves nothing behind.** For `ssh://` targets Hostprint
+streams a tar archive on stdin (its own binary and a fingerprint key) into a
+`mktemp -d` directory created under `umask 077`, runs the capture, and removes
+the directory from a shell `trap`, on success or failure. If the connection
+drops mid-capture, that directory (under `/tmp`, or `$TMPDIR`) may remain. The
+key sent is derived from your local key and the host name, so captures of one
+host can compare secret fingerprints while no remote ever holds your local
+key. Nothing secret is put on a command line, where other users of the remote
+could read it with `ps`. Destinations are validated, and options are ended
+with `--` before the destination, so a crafted `ssh://-o…` cannot inject ssh
+options.
 
 **It reads metadata, not content, by default.** File fingerprints are hashes
 and Git data is commit and file *names*. Logs are the one kind of content
@@ -56,7 +69,15 @@ review them before sharing.
 
 **It does not need root.** Without root, details of other users' processes and
 socket owners are left out and the capture says so. Hostprint never tries to
-elevate itself.
+elevate itself. On macOS the same applies to `lsof` (only your own sockets get
+an owning process) and `launchctl list` (only your user's launchd jobs).
+
+**System tools are run by absolute path.** On macOS, where most data comes
+from tools rather than `/proc`, Hostprint runs `/bin/ps`, `/usr/bin/vm_stat`,
+`/usr/bin/top`, `/usr/sbin/sysctl`, `/sbin/mount`, `/usr/sbin/netstat`,
+`/usr/sbin/lsof`, `/sbin/route` and `/bin/launchctl` directly, never through
+`PATH`, each with a timeout and a pinned locale. Their output is parsed, not
+evaluated, and command lines from `ps` are redacted like any others.
 
 ## Limits to be aware of
 

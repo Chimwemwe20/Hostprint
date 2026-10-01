@@ -156,16 +156,31 @@ pub(crate) fn compare(
         }
     }
 
-    let count_state = |p: &Processes, state: &str| p.list.iter().filter(|p| p.state == state).count();
-    let (za, zb) = (count_state(a, "Z"), count_state(b, "Z"));
-    if zb >= 5 && zb > za {
+    // A few processes are in D or Z state at any moment on a busy machine, so
+    // these rules count only long-lived, non-interactive processes and need a
+    // real jump, not one more than last time. (Found when parallel captures
+    // reading /proc moved the D count from 4 to 5.)
+    let count_state = |p: &Processes, at: DateTime<Utc>, state: &str| {
+        p.list
+            .iter()
+            .filter(|p| {
+                p.state == state
+                    && !young(p, at)
+                    && !INTERACTIVE.contains(&p.name.as_str())
+                    && !matches_any(&opts.ignore_processes, &p.name)
+            })
+            .count()
+    };
+    let jumped = |before: usize, after: usize, factor: usize| after >= 5 && after >= factor * before.max(1);
+    let (za, zb) = (count_state(a, at_a, "Z"), count_state(b, at_b, "Z"));
+    if jumped(za, zb, 2) {
         out.push(
             Change::new(Low, Category::Processes, "process.zombies", "processes/@zombies", "Zombie processes")
                 .values(za.to_string(), zb.to_string()),
         );
     }
-    let (da, db) = (count_state(a, "D"), count_state(b, "D"));
-    if db >= 5 && da < 5 {
+    let (da, db) = (count_state(a, at_a, "D"), count_state(b, at_b, "D"));
+    if jumped(da, db, 3) {
         out.push(
             Change::new(
                 Medium,
@@ -281,5 +296,25 @@ mod tests {
             }
         });
         assert_eq!(rules(&c), [("process.uninterruptible", Medium)]);
+    }
+
+    /// Regression: back-to-back captures on a busy machine saw 4 → 5.
+    #[test]
+    fn d_state_jitter_is_not_a_change() {
+        let mut a = baseline();
+        for i in 0..4 {
+            list(&mut a).push(hostprint_model::Process {
+                state: "D".into(),
+                ..process(2000 + i, &format!("io-worker-{i}"), MIB, at(-3000))
+            });
+        }
+        let mut b = later(&a, 60);
+        list(&mut b)
+            .push(hostprint_model::Process { state: "D".into(), ..process(2100, "io-worker-9", MIB, at(-3000)) });
+        // Young processes and interactive tools in D don't count either.
+        list(&mut b).push(hostprint_model::Process { state: "D".into(), ..process(2101, "fresh", MIB, at(55)) });
+        list(&mut b).push(hostprint_model::Process { state: "D".into(), ..process(2102, "hostprint", MIB, at(-3000)) });
+        let c = diff(&a, &b, &DiffOptions::default()).changes;
+        assert!(c.iter().all(|c| c.rule != "process.uninterruptible"), "{c:#?}");
     }
 }

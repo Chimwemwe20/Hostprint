@@ -1,14 +1,80 @@
-//! Markdown reports, for `diff --format markdown` and incident bundles. The
-//! output renders well on GitHub, GitLab and most ticketing systems.
+//! `hostprint report`, and the Markdown reports used by `diff --format
+//! markdown` and incident bundles. The Markdown renders well on GitHub,
+//! GitLab and most ticketing systems; the HTML lives in `html.rs`.
 
 use crate::show;
 use crate::style::{plural, Style};
+use crate::{html, App, ReportArgs, ReportFormat};
+use anyhow::{bail, Context, Result};
 use hostprint_diff::{Change, ChangeKind, Diff, Significance};
 use hostprint_model::{CollectorStatus, Snapshot};
 use std::fmt::Write;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 /// Lines of each log source included in a report.
 const LOG_LINES: usize = 20;
+
+pub fn run(app: &App, args: ReportArgs) -> Result<ExitCode> {
+    let config = app.config()?;
+    let first = app.store.resolve(&args.snapshot)?;
+    let (snapshot, diff) = match &args.to {
+        Some(to) => {
+            let to = app.store.resolve(to)?;
+            let diff = hostprint_diff::diff(&first, &to, &app.diff_options(&config)?);
+            (to, Some(diff))
+        }
+        None => (first, None),
+    };
+    let format = if args.html { ReportFormat::Html } else { args.format };
+    let content = match format {
+        ReportFormat::Html => html::report(&snapshot, diff.as_ref()),
+        ReportFormat::Markdown => combined_markdown(&snapshot, diff.as_ref()),
+    };
+
+    if args.output.as_deref() == Some(Path::new("-")) {
+        std::io::stdout().write_all(content.as_bytes())?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let extension = if format == ReportFormat::Html { "html" } else { "md" };
+    let path = args.output.unwrap_or_else(|| {
+        let stem = match &diff {
+            Some(d) => format!("{}-to-{}", d.from.name, d.to.name),
+            None => format!("{}-report", snapshot.name),
+        };
+        PathBuf::from(format!("{stem}.{extension}"))
+    });
+    write_file(&path, content.as_bytes(), args.force).with_context(|| format!("writing {}", path.display()))?;
+    println!("Report written: {}", path.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The snapshot report, followed by the diff report if there is one.
+pub fn combined_markdown(snapshot: &Snapshot, diff: Option<&Diff>) -> String {
+    let mut md = snapshot_markdown(snapshot);
+    if let Some(d) = diff {
+        md.push_str("\n---\n\n");
+        md.push_str(&diff_markdown(d, Significance::Info));
+    }
+    md
+}
+
+/// Writes a report with private permissions; refuses to overwrite unless forced.
+fn write_file(path: &Path, contents: &[u8], force: bool) -> Result<()> {
+    if path.exists() && !force {
+        bail!("{} already exists (use --force to replace it)", path.display());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(contents)?;
+    Ok(())
+}
 
 pub fn diff_markdown(diff: &Diff, min: Significance) -> String {
     let mut md = String::new();
@@ -62,9 +128,14 @@ pub fn diff_markdown(diff: &Diff, min: Significance) -> String {
                 ChangeKind::Removed => (cell(c.before.as_deref()), "—".to_string()),
                 ChangeKind::Changed => (cell(c.before.as_deref()), cell(c.after.as_deref())),
             };
+            let policy = c
+                .policy
+                .as_ref()
+                .map(|p| format!(" (policy: default {}, set by {})", p.default.label(), escape(&p.matched)))
+                .unwrap_or_default();
             let _ = writeln!(
                 md,
-                "| {} | {} | {} | {before} | {after} | {} | {} |",
+                "| {} | {} | {} | {before} | {after} | {} | {}{policy} |",
                 title_case(c.category.label()),
                 escape(&c.subject),
                 escape(c.field.as_deref().unwrap_or("")),

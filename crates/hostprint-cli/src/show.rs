@@ -71,11 +71,14 @@ pub fn overview(s: &Snapshot, style: &Style) -> Vec<String> {
         (false, _) => " (not root: other users' details may be partial)",
     };
     out.push(row(style, "by", format!("{user}{privilege}")));
+    if let Some(remote) = &s.capture.remote {
+        out.push(row(style, "via", remote));
+    }
 
     if let Some(h) = &s.host {
         let mut parts = vec![h.hostname.clone()];
         parts.extend(h.os.as_ref().map(|o| o.display()));
-        parts.extend(h.kernel.as_ref().map(|k| format!("Linux {k}")));
+        parts.extend(h.kernel_display());
         parts.push(h.architecture.clone());
         out.push(row(style, "host", parts.join(" · ")));
         if let Some(up) = h.uptime_seconds {

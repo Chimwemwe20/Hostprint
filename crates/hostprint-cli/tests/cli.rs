@@ -1,6 +1,7 @@
-//! End-to-end tests against the real binary and the real machine (Linux).
+//! End-to-end tests against the real binary and the real machine (Linux and
+//! macOS; CI runs both).
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -235,7 +236,9 @@ fn bundles_contain_snapshot_diff_report_and_checksums() {
 
     let files = read_bundle(&out_path);
     let names: Vec<&str> = files.iter().map(|(n, _)| n.split_once('/').unwrap().1).collect();
-    for expected in ["snapshot.json", "baseline.json", "diff.json", "report.md", "manifest.json", "checksums.sha256"] {
+    for expected in
+        ["snapshot.json", "baseline.json", "diff.json", "report.md", "report.html", "manifest.json", "checksums.sha256"]
+    {
         assert!(names.contains(&expected), "{expected} missing from {names:?}");
     }
     let get = |name: &str| &files.iter().find(|(n, _)| n.ends_with(&format!("/{name}"))).unwrap().1;
@@ -297,5 +300,171 @@ fn baselines_check_and_export() {
 
     assert_ok(&hostprint(&home, &["baseline", "delete", "production"]));
     assert_eq!(hostprint(&home, &["check", "production"]).status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn html_and_markdown_reports() {
+    let home = temp_home("report");
+    assert_ok(&hostprint(&home, &["capture", "--name", "a", "--quiet"]));
+    assert_ok(&hostprint(&home, &["capture", "--name", "b", "--quiet"]));
+
+    let html_path = home.join("r.html");
+    let out = hostprint(&home, &["report", "a", "b", "-o", html_path.to_str().unwrap()]);
+    assert_ok(&out);
+    let html = std::fs::read_to_string(&html_path).unwrap();
+    assert!(html.starts_with("<!doctype html>"));
+    assert!(html.contains("<h1>a → b</h1>"), "{html}");
+    assert!(html.contains("What changed") && html.contains("Collection"));
+    assert!(!html.contains("<script") && !html.contains("http://") && !html.contains("https://"), "self-contained");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&html_path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    // Refuses to overwrite without --force.
+    assert_eq!(hostprint(&home, &["report", "a", "b", "-o", html_path.to_str().unwrap()]).status.code(), Some(2));
+    assert_ok(&hostprint(&home, &["report", "a", "b", "-o", html_path.to_str().unwrap(), "--force"]));
+
+    let single = hostprint(&home, &["report", "a", "-o", "-"]);
+    assert_ok(&single);
+    assert!(stdout(&single).contains("<title>Hostprint: a</title>"));
+    let md = hostprint(&home, &["report", "a", "b", "--format", "markdown", "-o", "-"]);
+    assert!(stdout(&md).starts_with("# Hostprint snapshot: `b`"), "{}", stdout(&md));
+    assert!(stdout(&md).contains("# Hostprint diff: `a` → `b`"));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn interactive_commands_need_a_terminal() {
+    let home = temp_home("tty");
+    for args in [&["tui"][..], &["watch"][..]] {
+        let out = hostprint(&home, args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("needs an interactive terminal"));
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn policies_adjust_levels_and_exit_codes() {
+    let home = temp_home("policy");
+    assert_ok(&hostprint(&home, &["capture", "--name", "s", "--quiet"]));
+    let mut snap: Value = serde_json::from_str(&std::fs::read_to_string(home.join("snapshots/s.hp")).unwrap()).unwrap();
+    snap["name"] = "edited".into();
+    snap["host"]["hostname"] = "renamed-host".into(); // system.hostname: MEDIUM
+    let edited = home.join("edited.hp");
+    std::fs::write(&edited, serde_json::to_vec(&snap).unwrap()).unwrap();
+    let edited = edited.to_str().unwrap();
+    assert_eq!(hostprint(&home, &["diff", "s", edited, "--fail-on", "medium"]).status.code(), Some(1));
+
+    // A policy file lowers it: the check passes, and the output says why.
+    let file = home.join("team-policy.toml");
+    std::fs::write(&file, "[[rules]]\nrule = \"system.hostname\"\nlevel = \"low\"\n").unwrap();
+    let file = file.to_str().unwrap();
+    let out = hostprint(&home, &["diff", "s", edited, "--fail-on", "medium", "--policy", file]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).contains("[policy: was MEDIUM]"), "{}", stdout(&out));
+    let json: Value =
+        serde_json::from_slice(&hostprint(&home, &["--policy", file, "diff", "s", edited, "--json"]).stdout).unwrap();
+    let change = &json["changes"][0];
+    assert_eq!((change["significance"].as_str(), change["policy"]["default"].as_str()), (Some("low"), Some("medium")));
+
+    // config.toml turns system.* off; the --policy file still wins for the hostname.
+    std::fs::write(home.join("config.toml"), "[[policy.rules]]\nrule = \"system.*\"\nlevel = \"off\"\n\n[[policy.rules]]\nrule = \"sytem.kernel\"\nlevel = \"high\"\n").unwrap();
+    let out = hostprint(&home, &["diff", "s", edited]);
+    assert!(stdout(&out).contains("Policy turned off 1 change: system.hostname ×1."), "{}", stdout(&out));
+    assert!(stdout(&hostprint(&home, &["diff", "s", edited, "--policy", file])).contains("[policy: was MEDIUM]"));
+
+    // `policy show` explains the effective policy and flags the typo.
+    let show = hostprint(&home, &["policy", "show", "--policy", file]);
+    assert_ok(&show);
+    let text = stdout(&show);
+    assert!(text.contains("system.hostname → LOW"), "{text}");
+    assert!(text.contains("sytem.kernel → HIGH") && text.contains("matches no rule"), "{text}");
+    assert!(stdout(&hostprint(&home, &["policy", "rules"])).contains("container.health"));
+
+    // Invalid levels and thresholds are errors, not silently ignored.
+    std::fs::write(home.join("config.toml"), "[[policy.rules]]\nrule = \"git.*\"\nlevel = \"severe\"\n").unwrap();
+    let bad = hostprint(&home, &["diff", "s", edited]);
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown level 'severe'"));
+    std::fs::write(home.join("config.toml"), "[policy.thresholds]\ndisk_high_percent = 150\n").unwrap();
+    assert_eq!(hostprint(&home, &["diff", "s", edited]).status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Regression: `hostprint policy rules | head` used to panic with "Broken pipe".
+#[test]
+fn a_closed_pipe_ends_quietly() {
+    let home = temp_home("pipe");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hostprint"))
+        .args(["policy", "rules"])
+        .env("HOSTPRINT_HOME", &home)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Close the reading end before the first write, as an early-exiting
+    // `head` would, so every write fails.
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert_ne!(out.status.code(), Some(101), "exit status of a Rust panic");
+}
+
+/// The macOS collectors must produce real data. Runs on the macOS CI runner.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_collectors_produce_data() {
+    let home = temp_home("macos");
+    let out = hostprint(&home, &["capture", "--name", "m", "--json", "--no-save", "--quiet"]);
+    assert_ok(&out);
+    let s: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let reports = s["capture"]["collectors"].as_array().unwrap().clone();
+    for r in &reports {
+        eprintln!(
+            "{:<12} {:<8} {}",
+            r["name"],
+            r["status"],
+            r["summary"].as_str().or(r["message"].as_str()).unwrap_or("")
+        );
+    }
+    for name in ["system", "resources", "processes", "network", "services"] {
+        let r = reports.iter().find(|r| r["name"] == name).unwrap();
+        assert!(r["status"] == "ok" || r["status"] == "partial", "{name}: {r}");
+    }
+
+    let host = &s["host"];
+    assert_eq!(host["os"]["name"], "macOS", "{host}");
+    assert_eq!(host["kernelName"], "Darwin");
+    assert!(
+        host["os"]["versionId"].is_string() && host["bootTime"].is_string() && host["hardware"].is_string(),
+        "{host}"
+    );
+
+    let r = &s["resources"];
+    let total = r["memory"]["totalBytes"].as_u64().unwrap();
+    let available = r["memory"]["availableBytes"].as_u64().unwrap();
+    assert!(total > 1 << 30 && available > 0 && available <= total, "{}", r["memory"]);
+    assert!(r["cpu"]["logicalCores"].as_u64().unwrap() >= 1);
+    assert!(r["cpu"]["usagePercent"].is_number(), "top-based CPU sample: {}", r["cpu"]);
+    assert!(r["load"]["one"].is_number());
+    let disks = r["disks"].as_array().unwrap();
+    assert!(disks.iter().any(|d| d["mountPoint"] == "/" && d["totalBytes"].as_u64().unwrap_or(0) > 0), "{disks:?}");
+
+    let procs = s["processes"]["list"].as_array().unwrap();
+    assert!(procs.len() > 10, "{} processes", procs.len());
+    let launchd = procs.iter().find(|p| p["pid"] == 1).expect("pid 1");
+    assert_eq!(launchd["name"], "launchd");
+    assert!(launchd["startedAt"].is_string() && launchd["memoryBytes"].as_u64().unwrap() > 0, "{launchd}");
+
+    let net = &s["network"];
+    let lo0 = net["interfaces"].as_array().unwrap().iter().find(|i| i["name"] == "lo0").expect("lo0").clone();
+    assert!(lo0["addresses"].as_array().unwrap().iter().any(|a| a == "127.0.0.1/8"), "{lo0}");
+    assert!(net["ephemeralPorts"]["start"].as_u64().unwrap() > 1024);
+
+    assert!(!s["services"].as_array().unwrap().is_empty(), "launchd jobs");
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -3,19 +3,24 @@ mod bundle;
 mod capture;
 mod diff;
 mod doctor;
+mod html;
 mod list;
+mod policy;
+mod remote;
 mod report;
 mod show;
 mod style;
+#[cfg(feature = "tui")]
+mod tui;
 
-use anyhow::{Context as _, Result};
+use anyhow::{bail, Context as _, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use hostprint_collectors::logs::LogOptions;
 use hostprint_collectors::redact::Redactor;
 use hostprint_collectors::{CaptureContext, Collector};
-use hostprint_core::config::parse_duration;
+use hostprint_core::config::{parse_duration, PolicyConfig};
 use hostprint_core::Config;
-use hostprint_diff::Significance;
+use hostprint_diff::{Action, Policy, PolicyRule, Significance};
 use hostprint_storage::Store;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -38,6 +43,10 @@ struct Cli {
     #[arg(long, global = true)]
     no_color: bool,
 
+    /// Apply this policy file when comparing (on top of [policy] in config.toml)
+    #[arg(long, global = true, value_name = "FILE")]
+    policy: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -58,6 +67,8 @@ enum Command {
     Diff(DiffArgs),
     /// Package a snapshot (and optionally its diff) for an issue or ticket
     Bundle(BundleArgs),
+    /// Write a standalone HTML (or Markdown) report of a snapshot or a comparison
+    Report(ReportArgs),
     /// Manage known-good baselines for `hostprint check`
     #[command(subcommand)]
     Baseline(BaselineCommand),
@@ -72,6 +83,28 @@ enum Command {
     },
     /// Check what Hostprint can observe on this machine
     Doctor,
+    /// Inspect the diff policy, or list the rules a policy can adjust
+    #[command(subcommand)]
+    Policy(PolicyCommand),
+    /// Browse, compare and bundle snapshots in an interactive terminal UI
+    #[cfg(feature = "tui")]
+    Tui,
+    /// Live dashboard: capture on an interval and show what changes
+    #[cfg(feature = "tui")]
+    Watch(WatchArgs),
+}
+
+#[cfg(feature = "tui")]
+#[derive(Args)]
+pub struct WatchArgs {
+    /// Time between captures, e.g. 10s or 1m
+    #[arg(long, default_value = "10s", value_name = "DURATION")]
+    pub interval: String,
+    /// Compare with this baseline instead of the first capture
+    #[arg(long, value_name = "NAME")]
+    pub baseline: Option<String>,
+    #[command(flatten)]
+    pub options: CaptureOptions,
 }
 
 /// Options shared by every command that captures the live system.
@@ -95,11 +128,16 @@ pub struct CaptureOptions {
     /// Skip these collectors (comma-separated)
     #[arg(long, value_delimiter = ',', value_name = "NAMES")]
     pub skip: Vec<String>,
+    /// Binary to run on ssh:// machines [default: this one]
+    #[arg(long, value_name = "FILE")]
+    pub remote_binary: Option<PathBuf>,
 }
 
 #[derive(Args)]
 pub struct CaptureArgs {
-    /// Snapshot name [default: snap-YYYYMMDD-HHMMSS]
+    /// Capture another machine instead: ssh://[user@]host[:port]
+    pub target: Option<String>,
+    /// Snapshot name [default: snap-YYYYMMDD-HHMMSS, or <host>-YYYYMMDD-HHMMSS]
     #[arg(short, long)]
     pub name: Option<String>,
     /// Replace an existing snapshot with the same name
@@ -174,9 +212,9 @@ impl DiffOutput {
 
 #[derive(Args)]
 pub struct DiffArgs {
-    /// Baseline snapshot (name or file)
+    /// Baseline snapshot: a name, a file, or ssh://host to capture one now
     pub from: String,
-    /// Snapshot to compare with [default: capture the current state, without saving]
+    /// Snapshot to compare with, the same kinds [default: capture this machine now, without saving]
     pub to: Option<String>,
     #[command(flatten)]
     pub output: DiffOutput,
@@ -199,6 +237,40 @@ pub struct BundleArgs {
     pub output: Option<PathBuf>,
     #[command(flatten)]
     pub options: CaptureOptions,
+}
+
+#[derive(Subcommand)]
+pub enum PolicyCommand {
+    /// Show the effective policy and warn about entries that match no rule
+    Show,
+    /// List every rule id a policy can adjust
+    Rules,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ReportFormat {
+    Html,
+    Markdown,
+}
+
+#[derive(Args)]
+pub struct ReportArgs {
+    /// Snapshot to report on (name or file); with TO, the "from" side
+    pub snapshot: String,
+    /// Report the changes from SNAPSHOT to this snapshot (name or file)
+    pub to: Option<String>,
+    /// Output format
+    #[arg(long, value_enum, default_value = "html")]
+    pub format: ReportFormat,
+    /// Shorthand for --format html
+    #[arg(long)]
+    pub html: bool,
+    /// Output file [default: <name>.html in the current directory; "-" for stdout]
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+    /// Replace an existing file
+    #[arg(short, long)]
+    pub force: bool,
 }
 
 #[derive(Subcommand)]
@@ -282,6 +354,8 @@ pub struct App {
     pub store: Store,
     pub style: Style,
     pub err_style: Style,
+    /// `--policy FILE`, applied on top of `[policy]` in `config.toml`.
+    pub policy_file: Option<PathBuf>,
 }
 
 impl App {
@@ -331,18 +405,74 @@ impl App {
         Ok((ctx, collectors))
     }
 
-    pub fn diff_options(config: &Config) -> hostprint_diff::DiffOptions {
-        hostprint_diff::DiffOptions {
+    pub fn diff_options(&self, config: &Config) -> Result<hostprint_diff::DiffOptions> {
+        Ok(hostprint_diff::DiffOptions {
             ignore_processes: config.ignore.processes.clone(),
             ignore_ports: config.ignore.ports.clone(),
             ignore_env: config.ignore.env.clone(),
             ignore_containers: config.ignore.containers.clone(),
             ignore_services: config.ignore.services.clone(),
+            policy: self.policy(config)?,
+        })
+    }
+
+    /// The effective policy: `--policy` rules first (they win), then
+    /// `config.toml`'s; thresholds from the defaults, then `config.toml`, then
+    /// `--policy`.
+    pub fn policy(&self, config: &Config) -> Result<Policy> {
+        let config_source = "config.toml".to_string();
+        let file = match &self.policy_file {
+            Some(path) => Some((PolicyConfig::load(path)?, path.display().to_string())),
+            None => None,
+        };
+        let mut policy = Policy::default();
+        let layers: Vec<(&PolicyConfig, &String)> =
+            file.iter().map(|(p, s)| (p, s)).chain([(&config.policy, &config_source)]).collect();
+        for (layer, source) in &layers {
+            for r in &layer.rules {
+                let action = Action::parse(&r.level).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{source}: policy rule '{}': unknown level '{}' (use off, info, low, medium or high)",
+                        r.rule,
+                        r.level
+                    )
+                })?;
+                policy.rules.push(PolicyRule {
+                    rule: r.rule.clone(),
+                    subject: r.subject.clone(),
+                    action,
+                    source: source.to_string(),
+                });
+            }
         }
+        // Lowest precedence first, so later layers overwrite.
+        for (layer, _) in layers.iter().rev() {
+            let t = &layer.thresholds;
+            let pct = |v: Option<f64>, current: f64| v.map_or(current, |p| p / 100.0);
+            let th = &mut policy.thresholds;
+            th.disk_high = pct(t.disk_high_percent, th.disk_high);
+            th.disk_medium = pct(t.disk_medium_percent, th.disk_medium);
+            th.memory_available_high = pct(t.memory_available_high_percent, th.memory_available_high);
+            th.load_high = t.load_high_per_core.unwrap_or(th.load_high);
+            th.load_medium = t.load_medium_per_core.unwrap_or(th.load_medium);
+        }
+        let problems = policy.thresholds.validate();
+        if !problems.is_empty() {
+            bail!("policy thresholds: {}", problems.join("; "));
+        }
+        Ok(policy)
     }
 }
 
 fn main() -> ExitCode {
+    // Rust ignores SIGPIPE, which turns `hostprint list | head` into a panic
+    // when head exits. Restore the default so a closed pipe just ends us, as
+    // it does every other Unix tool.
+    #[cfg(unix)]
+    // SAFETY: called before any threads exist; SIG_DFL is always valid.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     let style = Style::detect(cli.no_color, style::Stream::Stdout);
     let err_style = Style::detect(cli.no_color, style::Stream::Stderr);
@@ -360,13 +490,14 @@ fn run(cli: Cli, style: Style, err_style: Style) -> Result<ExitCode> {
         Some(home) => home,
         None => Store::default_root()?,
     };
-    let app = App { store: Store::new(root), style, err_style };
+    let app = App { store: Store::new(root), style, err_style, policy_file: cli.policy };
     match cli.command {
         Command::Capture(args) => capture::run(&app, args),
         Command::List { json } => list::run(&app, hostprint_storage::Kind::Snapshot, json),
         Command::Show(args) => show::run(&app, args),
         Command::Diff(args) => diff::run(&app, args),
         Command::Bundle(args) => bundle::run(&app, args),
+        Command::Report(args) => report::run(&app, args),
         Command::Baseline(cmd) => baseline::run(&app, cmd),
         Command::Check(args) => baseline::check(&app, args),
         Command::Export(args) => {
@@ -389,5 +520,10 @@ fn run(cli: Cli, style: Style, err_style: Style) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Doctor => doctor::run(&app),
+        Command::Policy(cmd) => policy::run(&app, cmd),
+        #[cfg(feature = "tui")]
+        Command::Tui => tui::browse(&app),
+        #[cfg(feature = "tui")]
+        Command::Watch(args) => tui::watch(&app, args),
     }
 }

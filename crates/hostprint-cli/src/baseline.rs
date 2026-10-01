@@ -44,9 +44,10 @@ pub fn run(app: &App, command: BaselineCommand) -> Result<ExitCode> {
 pub fn check(app: &App, args: CheckArgs) -> Result<ExitCode> {
     let config = app.config()?;
     let baseline = app.store.load_from(Kind::Baseline, &args.baseline)?;
+    let opts = app.diff_options(&config)?;
     let purpose = format!("to check against baseline '{}'", args.baseline);
     let now = capture::live(app, &config, &args.options, "now", &purpose)?;
-    let result = hostprint_diff::diff(&baseline, &now, &App::diff_options(&config));
+    let result = hostprint_diff::diff(&baseline, &now, &opts);
     let threshold: Significance = args.fail_on.into();
 
     let text = args.output.format() == Format::Text;

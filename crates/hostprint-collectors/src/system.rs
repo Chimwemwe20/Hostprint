@@ -17,6 +17,10 @@ impl Collector for SystemCollector {
     }
 
     fn collect(&self, ctx: &CaptureContext) -> Result<Collected, CollectError> {
+        #[cfg(target_os = "macos")]
+        if ctx.is_live() {
+            return crate::macos::live::system(ctx);
+        }
         ctx.require_linux()?;
         let hostname = read_trimmed(&ctx.path("/proc/sys/kernel/hostname"))
             .or_else(|| read_trimmed(&ctx.path("/etc/hostname")))
@@ -35,6 +39,7 @@ impl Collector for SystemCollector {
             hostname,
             os,
             kernel,
+            kernel_name: read_trimmed(&ctx.path("/proc/sys/kernel/ostype")).or_else(|| Some("Linux".into())),
             architecture: architecture(),
             boot_time,
             uptime_seconds,
@@ -42,12 +47,16 @@ impl Collector for SystemCollector {
             hardware: hardware(ctx),
             container: container_runtime(ctx),
         };
-        let summary = match (&host.os, &host.kernel) {
-            (Some(os), Some(k)) => format!("{} · Linux {}", os.display(), k),
-            (Some(os), None) => os.display(),
-            _ => host.hostname.clone(),
-        };
-        Ok(Collected::new(Section::Host(host)).summary(summary))
+        Ok(Collected::new(Section::Host(host.clone())).summary(summary(&host)))
+    }
+}
+
+/// "Ubuntu 24.04.1 LTS · Linux 6.8.0-45-generic".
+pub(crate) fn summary(host: &Host) -> String {
+    match (&host.os, host.kernel_display()) {
+        (Some(os), Some(k)) => format!("{} · {k}", os.display()),
+        (Some(os), None) => os.display(),
+        _ => host.hostname.clone(),
     }
 }
 
@@ -72,7 +81,7 @@ pub(crate) fn parse_boot_time(proc_stat: &str) -> Option<DateTime<Utc>> {
     DateTime::from_timestamp(secs, 0)
 }
 
-fn architecture() -> String {
+pub(crate) fn architecture() -> String {
     #[cfg(unix)]
     {
         // SAFETY: utsname is plain data; uname fills it with NUL-terminated strings.
@@ -91,7 +100,7 @@ fn architecture() -> String {
     std::env::consts::ARCH.to_string()
 }
 
-fn timezone(ctx: &CaptureContext) -> Option<String> {
+pub(crate) fn timezone(ctx: &CaptureContext) -> Option<String> {
     if let Some(tz) = read_trimmed(&ctx.path("/etc/timezone")) {
         return Some(tz);
     }

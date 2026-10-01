@@ -6,9 +6,9 @@ improvements to Hostprint are improvements to its noise reduction.
 
 ## Building and testing
 
-Hostprint is a Rust workspace that targets Linux. The code compiles
+Hostprint is a Rust workspace that targets Linux and macOS. The code compiles
 elsewhere, but collectors report "not supported" and the end-to-end tests
-only run on Linux.
+only run on Linux and macOS.
 
 ### With Docker (no Rust install, any OS)
 
@@ -20,6 +20,7 @@ runs are fast.
 | Command              | Does |
 | -------------------- | ---- |
 | `check`              | `cargo fmt --check`, clippy with `-D warnings`, all tests: exactly what CI runs |
+| `check-macos`        | clippy with `-D warnings` for `aarch64-apple-darwin` and `x86_64-apple-darwin`: type-checks the macOS code without a Mac |
 | `test [args]`        | `cargo test --workspace [args]` |
 | `fmt`                | `cargo fmt --all` |
 | `build`              | static release binary in `dist/hostprint` |
@@ -56,6 +57,30 @@ cargo fmt --all
   collectors.
 - **Docker:** `dev demo` runs a stack, breaks it and diffs it; any container
   with `/var/run/docker.sock` mounted can run the Docker collector.
+- **macOS:** the `macos` CI job runs clippy, the whole test suite (including
+  `macos_collectors_produce_data` in `hostprint-cli/tests/cli.rs`) and a
+  capture/diff/report smoke test on a macOS runner. It uploads the snapshots
+  and the HTML report as the `macos-snapshots` artifact, which is the quickest
+  way to see what the collectors produced on a real Mac.
+
+## Working on macOS support
+
+The macOS collectors live in `hostprint-collectors/src/macos/`:
+
+- `parse.rs` holds pure parsers for the output of `vm_stat`, `sysctl
+  vm.swapusage`, `top`, `mount`, `ps`, `netstat`, `lsof`, `route` and
+  `launchctl list`. It compiles on every platform, so its tests run in the
+  Linux container too. Add a test with real output whenever a format surprises
+  you.
+- `live.rs` (macOS only) runs the tools by absolute path and makes the system
+  calls (`sysctlbyname`, `getifaddrs`, `getpwuid_r`, `getloadavg`).
+
+Each shared collector (`system`, `resources`, `processes`, `network`,
+`services`) hands off to `macos::live` at the top of `collect` when the
+capture is live on macOS; fixture-root captures always take the Linux path, so
+the existing fixture tests are unchanged. Run `dev check-macos` before pushing:
+it catches macOS-only compile errors in a few seconds instead of a CI round
+trip.
 
 ## Layout
 
@@ -63,11 +88,13 @@ cargo fmt --all
 crates/
   hostprint-model/       Snapshot types; their JSON *is* the file format
   hostprint-collectors/  One module per collector, plus redaction
+    src/macos/           macOS sources: pure parsers, and the live calls
   hostprint-core/        Capture engine (parallel collectors) and config.toml
   hostprint-storage/     ~/.hostprint: snapshots, permissions, fingerprint key
   hostprint-diff/        Comparison rules and significance
   hostprint-cli/         The `hostprint` binary: arguments, rendering, Markdown
-                         reports, bundles, baselines
+                         and HTML reports, bundles, baselines
+    src/tui/             `hostprint tui` and `watch` (ratatui, `tui` feature)
 docs/
   diff-rules.md          Every rule and its threshold
   snapshot-format.md     The documented, versioned file format
@@ -79,7 +106,21 @@ scripts/dev.ps1, dev.sh  Docker-based build, test and run
 
 Dependencies flow one way: `model` ← `collectors` ← `core` ← `cli`, with
 `diff` and `storage` depending only on `model`. Keep dependencies few; every
-crate added ends up in a binary people run on production machines.
+crate added ends up in a binary people run on production machines. The
+terminal UI's dependency (`ratatui`) sits behind the default `tui` feature, so
+`--no-default-features` builds a binary without it.
+
+## Working on the terminal UI
+
+Each screen in `src/tui` is a `View`: plain state, a `key` handler and a `draw`
+function. Tests drive a view with key events and assert on the text it
+renders into ratatui's `TestBackend` (`tui::testing::render`), using the
+snapshots in `tui/fixtures.rs`. Captures run on a worker thread (`tui::Job`),
+so never block in `key` or `draw`.
+
+To try the real thing in a terminal, `./scripts/dev.sh run tui` (inside the
+container) or run `dist/hostprint tui` on a Linux machine (or
+`cargo run -p hostprint -- tui` on a Mac).
 
 ## Adding a collector
 

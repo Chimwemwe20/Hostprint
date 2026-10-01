@@ -17,6 +17,48 @@ Significance levels:
 Hostprint reports evidence, not conclusions. A HIGH change means "look here
 first", not "this caused the incident".
 
+## Policies
+
+The levels below are defaults. A policy adjusts them for your site, in
+`config.toml` or in a separate file passed with `--policy` (useful for a
+team-wide policy checked into a repository):
+
+```toml
+# config.toml: under [policy]. A --policy file: the same keys at the top level
+# ([[rules]], [thresholds]).
+
+[[policy.rules]]
+rule = "container.recreated"   # rule id; * wildcards allowed
+level = "off"                  # off, info, low, medium or high
+
+[[policy.rules]]
+rule = "container.*"
+subject = "payments-*"         # only changes about these subjects
+level = "high"
+
+[policy.thresholds]
+disk_high_percent = 85         # default 95
+disk_medium_percent = 80       # default 90
+memory_available_high_percent = 15   # default 10
+load_high_per_core = 4.0       # default 2.0
+load_medium_per_core = 2.0     # default 1.0
+```
+
+- Rules are checked in order and the first match applies; rules from a
+  `--policy` file come before those in `config.toml`, so the file wins.
+  Thresholds layer the same way: defaults, then `config.toml`, then the file.
+- A policy only changes levels. It never creates changes or hides how a level
+  was reached. A change whose level was set by a policy carries a `policy`
+  field in JSON (its default level and the matching policy rule), and is
+  marked in the text, TUI, Markdown and HTML output. Changes a policy turns
+  off are counted in a note: "Policy turned off 2 changes: container.recreated
+  ×2."
+- Thresholds apply to `disk.usage` and `disk.inodes` (HIGH and MEDIUM),
+  `memory.available` (HIGH) and `load.average` (HIGH and MEDIUM).
+- `hostprint policy rules` lists every rule id. `hostprint policy show`
+  prints the effective policy and warns about entries that match no rule,
+  usually a typo. Unknown levels and inconsistent thresholds are errors.
+
 ## Noise reduction
 
 Some values change on every capture. They are never compared directly:
@@ -34,6 +76,9 @@ Some values change on every capture. They are never compared directly:
   ...) are INFO.
 - systemd `oneshot` units changing between inactive and active are INFO, and
   inactive units vanishing (systemd unloads them) are INFO.
+- macOS launchd jobs are treated like oneshots: most start on demand and exit
+  when idle, so starting and stopping are INFO. A job whose last exit status
+  turns non-zero is still `service.failed` (HIGH).
 - Container port bindings are compared only when the container is running in
   both snapshots.
 - A section that could not be collected in one snapshot is not compared at
@@ -107,7 +152,9 @@ Disk usage is `used / (used + available)`, as `df` reports it.
 
 ### Processes
 
-Processes are grouped by name.
+Processes are grouped by name. The D-state and zombie counts include only
+processes older than a minute, and leave out interactive tools and ignored
+processes, because a few short I/O waits are normal on a busy machine.
 
 | Rule                      | Level  | When |
 | ------------------------- | ------ | ---- |
@@ -118,8 +165,8 @@ Processes are grouped by name.
 |                           | LOW    | Grew by at least 128 MiB and 50% |
 | `process.restarted`       | LOW    | Single-instance process has a new start time |
 | `process.exe`             | LOW    | Single-instance process runs a different executable |
-| `process.uninterruptible` | MEDIUM | At least 5 processes in D state, from fewer than 5 |
-| `process.zombies`         | LOW    | At least 5 zombies, and more than before |
+| `process.uninterruptible` | MEDIUM | At least 5 processes stuck in D state, and at least triple the count before |
+| `process.zombies`         | LOW    | At least 5 zombies, and at least double the count before |
 | `process.total`           | INFO   | Process count changed by at least 10 and 10% |
 
 ### Network
@@ -153,13 +200,13 @@ for ports in the ephemeral range.
 | ---------------------- | ------ | ---- |
 | `service.failed`       | HIGH   | Unit entered the failed state (or appeared already failed) |
 | `service.restart_loop` | HIGH   | Unit is waiting to be restarted (`activating (auto-restart)`) |
-| `service.stopped`      | HIGH   | Unit went from active to inactive (INFO for oneshot) |
+| `service.stopped`      | HIGH   | Unit went from active to inactive (INFO for oneshot and launchd) |
 | `service.restarts`     | HIGH   | systemd restarted it 5 or more times since the baseline |
 |                        | MEDIUM | 1 to 4 times |
 | `service.restarted`    | LOW    | Still running but started again without an automatic restart |
 | `service.recovered`    | LOW    | Failed → active |
-| `service.started`      | LOW    | Became active (INFO for oneshot) |
-| `service.state`        | LOW    | Any other state change (INFO for oneshot) |
+| `service.started`      | LOW    | Became active (INFO for oneshot and launchd) |
+| `service.state`        | LOW    | Any other state change (INFO for oneshot and launchd) |
 | `service.removed`      | MEDIUM | An active unit is no longer loaded (INFO if it was inactive) |
 | `service.added`        | LOW    | New active unit (INFO if inactive) |
 

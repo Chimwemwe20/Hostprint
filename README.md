@@ -76,10 +76,19 @@ point-in-time evidence and makes that evidence comparable.
 A capture typically takes under a second (collectors run in parallel), and a
 snapshot is tens to hundreds of kilobytes.
 
+On macOS the same sections come from macOS's own sources: `sysctl`,
+`vm_stat` and `top` for resources, `ps` for processes, `netstat`, `lsof`,
+`route` and `getifaddrs` for the network, and `launchctl` for services
+(launchd jobs). Linux-only details are left out: pressure stall, the systemd
+journal, `/proc`-level thread counts.
+
 ## Install
 
-Hostprint supports Linux. It is tested on x86_64; ARM64 builds from the same
-code but has not been tested yet.
+Hostprint runs on Linux and macOS. Linux is tested on x86_64 (ARM64 builds
+from the same code but is not tested yet); macOS is tested in CI on Apple
+Silicon, and Intel Macs are type-checked there too. On macOS, install with
+`cargo install --path crates/hostprint-cli`; the Docker build below produces
+Linux binaries only.
 
 **With Docker, no Rust needed.** This builds a static binary into `dist/`:
 
@@ -95,8 +104,9 @@ sudo install dist/hostprint /usr/local/bin/
 cargo install --path crates/hostprint-cli
 ```
 
-The binary is about 3.5 MB and, built for musl as above, fully static. There
-are no published releases yet; `.github/workflows/release.yml` is set up to
+The binary is about 4 MB and, built for musl as above, fully static. Building
+with `--no-default-features` leaves out the terminal UI. There are no
+published releases yet; `.github/workflows/release.yml` is set up to
 attach static x86_64 and ARM64 binaries to a GitHub Release when a `v*` tag is
 pushed.
 
@@ -105,17 +115,21 @@ Run `hostprint doctor` to see what it can observe on your machine.
 ## Usage
 
 ```text
-hostprint capture  [--name NAME] [--logs-since 30m] [--repo DIR] [--env-file FILE] [--file PATH]
-                   [--only LIST] [--skip LIST] [--json] [--force]
+hostprint capture  [ssh://[user@]host[:port]] [--name NAME] [--logs-since 30m] [--repo DIR]
+                   [--env-file FILE] [--file PATH] [--only LIST] [--skip LIST] [--json] [--force]
 hostprint list
 hostprint show     NAME [--section processes|ports|interfaces|disks|services|containers|env|runtimes|files|logs|collectors] [--json]
 hostprint diff     FROM [TO] [--format text|json|markdown] [--all] [--min LEVEL] [--fail-on LEVEL]
+hostprint tui
+hostprint watch    [--interval 10s] [--baseline NAME]
+hostprint report   SNAPSHOT [TO] [--format html|markdown] [--output FILE]
 hostprint bundle   [SNAPSHOT] [--against SNAPSHOT] [--output FILE]
 hostprint baseline create NAME [--from SNAPSHOT] | list | show NAME | delete NAME
 hostprint check    BASELINE [--format ...] [--fail-on LEVEL]
 hostprint export   NAME [--output FILE]
 hostprint delete   NAME
 hostprint doctor
+hostprint policy   show | rules
 ```
 
 - **Compare against now.** `hostprint diff healthy` captures the current state
@@ -129,12 +143,89 @@ hostprint doctor
 - **Script it.** `--json` everywhere, `--format markdown` for tickets and pull
   requests, and `--fail-on medium` exits with status 1 when something at or
   above MEDIUM changed.
+- **Tune it.** A policy raises, lowers or silences rules for your site
+  (`container.*` for `payments-*` is HIGH, `container.recreated` is off) and
+  moves thresholds. Put it in `config.toml`, or share one with
+  `--policy team-policy.toml`. See [Policies](docs/diff-rules.md#policies).
 - **Record your application.** `--repo` points the Git collector at your
   deployment, `--env-file` records a dotenv file, `--file` fingerprints a
   config file. All of these can be set permanently in `config.toml`.
 
 Exit status: `0` success, `1` threshold met (`--fail-on`, or `check`'s default
 of MEDIUM), `2` error.
+
+### Terminal UI
+
+`hostprint tui` lets you browse snapshots and baselines; open one to page
+through its processes, ports, services, containers, disks, environment and
+logs, with `/` to filter. Mark one with Space and press `c` to compare (or
+`n` to compare it with the system as it is now). The diff view filters by
+level (`m`) and category (`c`), Enter shows a change's rule and full values,
+and `b` writes an incident bundle.
+
+`hostprint watch` is a live dashboard. It captures every 10 seconds (or
+`--interval`). Here it is rendered from the test fixtures, where Redis starts
+crash-looping and nginx fails between two captures (blank rows trimmed):
+
+```text
+ HOSTPRINT  WATCH web-1 · every 10s · capture #2 · paused
+┌ CPU ──────────────────┐┌ Memory ───────────────┐┌ Disk ─────────────────┐┌ Load ─────────────────┐
+│█████████ 38%          ││████38% of 8.0 GiB     ││█████████/ 54%         ││██  0.42 (0.1/core)    │
+└───────────────────────┘└───────────────────────┘└───────────────────────┘└───────────────────────┘
+┌ Services · 0 active · 1 failed ────────────────┐┌ Containers · 1/2 running ──────────────────────┐
+│nginx                  failed (failed)  ↻3      ││redis                  restarting unhealthy  ↻17│
+│                                                ││api                    running healthy          │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Changed since first capture at 14:13:20 · 4 high · 1 medium · 0 low ─────────────────────────────┐
+│HIGH   SERVICES      nginx.service               state              active (running) → failed (fai│
+│HIGH   CONTAINERS    redis                       health             healthy → unhealthy           │
+│HIGH   CONTAINERS    redis                       restart count      0 → 17                        │
+│HIGH   CONTAINERS    redis                       state              running → restarting          │
+│MEDIUM SERVICES      nginx.service               automatic restarts 0 → 3                         │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Recent state changes ────────────────────────────────────────────────────────────────────────────┐
+│14:13:30 HIGH   nginx.service state active (running) → failed (failed)                            │
+│14:13:30 HIGH   redis health healthy → unhealthy                                                  │
+│14:13:30 HIGH   redis restart count 0 → 17                                                        │
+│14:13:30 HIGH   redis state running → restarting                                                  │
+│14:13:30 MEDIUM nginx.service automatic restarts 0 → 3                                            │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ space capture now  p resume  r reset reference  s save snapshot  ? help  q quit
+```
+
+Problems are listed first. The timeline shows what changed between consecutive
+captures, and `--baseline production` measures drift from a baseline instead
+of from the first capture. Both views run in any terminal, including over SSH.
+
+### HTML reports
+
+```sh
+hostprint report healthy broken     # writes healthy-to-broken.html
+hostprint report broken             # one snapshot
+```
+
+The report is a single file with inline styles, no scripts and no external
+resources, so it opens the same from an email attachment or a ticket. It
+follows the reader's light or dark preference. Bundles include it as
+`report.html`.
+
+### Other machines, over SSH
+
+```sh
+hostprint capture ssh://deploy@web-1 --name web-1-healthy
+hostprint diff web-1-healthy ssh://deploy@web-1    # what changed on web-1 since then
+hostprint diff ssh://web-1 ssh://web-2             # how do two servers differ, right now
+```
+
+Nothing is installed on the remote. Hostprint uses your `ssh` client, so your
+keys, agent, `~/.ssh/config` and known_hosts apply. It streams a copy of
+itself to a private temporary directory, captures, returns the snapshot and
+removes the directory, even if the capture fails. The remote needs Linux on
+the same architecture, plus `sh`, `tar` and `base64` (any distribution,
+BusyBox included). Send a statically built binary
+(`docker build --target binary --output dist .`); `--remote-binary` picks a
+different one, for example an ARM64 build. Capture options such as
+`--logs-since`, `--only` and `--repo` are passed through.
 
 ### Baselines and checks
 
@@ -152,7 +243,7 @@ hostprint bundle broken --against healthy
 ```
 
 writes `broken-20261001-165001.tar.gz` with `snapshot.json`, `baseline.json`,
-`diff.json`, a Markdown `report.md`, the collected `logs/`, a `manifest.json`,
+`diff.json`, `report.md` and `report.html`, the collected `logs/`, a `manifest.json`,
 and a `checksums.sha256` you can verify with `sha256sum -c`. It is ready to
 attach to a GitHub issue or support ticket. With no snapshot named,
 `hostprint bundle` captures the system first, which makes it a one-command
@@ -227,6 +318,15 @@ ports = [5353]
 env = ["BUILD_*"]
 containers = ["buildkit*"]
 services = ["apt-daily*"]
+
+[[policy.rules]]             # adjust rule levels; first match wins
+rule = "container.*"
+subject = "payments-*"
+level = "high"               # off, info, low, medium, high
+
+[policy.thresholds]
+disk_high_percent = 85
+disk_medium_percent = 80
 ```
 
 ## Snapshot format
@@ -242,9 +342,10 @@ Done:
 - **v0.1:** capture, list, show, diff, doctor, JSON output, secret redaction.
 - **v0.2:** incident bundles, journal / Docker / file log collection,
   Markdown reports, baselines and `check`, configurable collectors, export.
-
-Next, **v0.3:** watch mode and a terminal UI, custom diff policies, macOS
-support, capture over SSH.
+- **v0.3:** terminal UI (`tui`), live dashboard (`watch`), standalone HTML
+  reports, diff policies, capture over SSH.
+- **macOS:** native collectors for system, resources, processes, network and
+  launchd, tested in CI on macOS runners.
 
 ## Developing
 
@@ -253,6 +354,7 @@ No local Rust toolchain is needed. `scripts/dev.ps1` (Windows) and
 
 ```sh
 ./scripts/dev.sh check                  # fmt, clippy and tests, as CI runs them
+./scripts/dev.sh check-macos            # type-check the macOS build (its tests run in CI)
 ./scripts/dev.sh run capture --name x   # try the CLI
 ./scripts/dev.sh build                  # static binary in dist/
 ./scripts/dev.sh demo                   # the README demo, against your Docker

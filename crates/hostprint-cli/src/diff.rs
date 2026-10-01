@@ -11,12 +11,13 @@ const MAX_FIELD: usize = 26;
 
 pub fn run(app: &App, args: DiffArgs) -> Result<ExitCode> {
     let config = app.config()?;
-    let from = app.store.resolve(&args.from)?;
+    let opts = app.diff_options(&config)?;
+    let from = capture::resolve(app, &config, &args.options, &args.from)?;
     let to = match &args.to {
-        Some(reference) => app.store.resolve(reference)?,
+        Some(reference) => capture::resolve(app, &config, &args.options, reference)?,
         None => capture::live(app, &config, &args.options, "now", "for comparison (not saved)")?,
     };
-    let diff = hostprint_diff::diff(&from, &to, &App::diff_options(&config));
+    let diff = hostprint_diff::diff(&from, &to, &opts);
     print(&diff, &args.output, &app.style)?;
     Ok(exit_code(&diff, args.fail_on.map(Significance::from)))
 }
@@ -141,9 +142,14 @@ pub fn render(diff: &Diff, min: Significance, style: &Style) -> String {
                 ChangeKind::Removed => style.red(&format!("− {}", clip(c.before.as_deref().unwrap_or(""), MAX_VALUE))),
             };
             let delta = c.delta.as_ref().map(|d| style.dim(&format!("  ({d})"))).unwrap_or_default();
+            let policy = c
+                .policy
+                .as_ref()
+                .map(|p| style.yellow(&format!("  [policy: was {}]", p.default.label())))
+                .unwrap_or_default();
             let subject = pad(&clip(&c.subject, MAX_SUBJECT), subject_w);
             let field = pad(&clip(c.field.as_deref().unwrap_or(""), MAX_FIELD), field_w);
-            line(format!("    {}  {}  {value}{delta}", style.bold(&subject), style.dim(&field)));
+            line(format!("    {}  {}  {value}{delta}{policy}", style.bold(&subject), style.dim(&field)));
         }
     }
     out

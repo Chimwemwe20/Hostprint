@@ -1,24 +1,24 @@
-use crate::{Category, Change, Significance, Significance::*};
+use crate::{Category, Change, Significance, Significance::*, Thresholds};
 use hostprint_model::format::{bytes, percent_change};
 use hostprint_model::{Disk, Resources};
 use std::collections::BTreeMap;
 
 const MIB: u64 = 1024 * 1024;
 
-pub(crate) fn compare(a: &Resources, b: &Resources, out: &mut Vec<Change>) {
-    memory(a, b, out);
+pub(crate) fn compare(a: &Resources, b: &Resources, t: &Thresholds, out: &mut Vec<Change>) {
+    memory(a, b, t, out);
     swap(a, b, out);
     cpu(a, b, out);
-    load(a, b, out);
+    load(a, b, t, out);
     pressure(a, b, out);
-    disks(&a.disks, &b.disks, out);
+    disks(&a.disks, &b.disks, t, out);
 }
 
 fn change(sig: Significance, rule: &str, key: &str, subject: &str) -> Change {
     Change::new(sig, Category::Resources, rule, format!("resources/{key}"), subject)
 }
 
-fn memory(a: &Resources, b: &Resources, out: &mut Vec<Change>) {
+fn memory(a: &Resources, b: &Resources, t: &Thresholds, out: &mut Vec<Change>) {
     let (ma, mb) = (&a.memory, &b.memory);
     if ma.total_bytes > 0 && relative(ma.total_bytes as f64, mb.total_bytes as f64).abs() > 0.02 {
         out.push(
@@ -33,7 +33,7 @@ fn memory(a: &Resources, b: &Resources, out: &mut Vec<Change>) {
     let share_after = mb.available_bytes as f64 / mb.total_bytes as f64;
     let sig = if rel < 0.0 {
         let drop = -rel;
-        if share_after < 0.10 && drop >= 0.20 {
+        if share_after < t.memory_available_high && drop >= 0.20 {
             Some(High)
         } else if drop >= 0.50 {
             Some(Medium)
@@ -110,17 +110,17 @@ fn cpu(a: &Resources, b: &Resources, out: &mut Vec<Change>) {
     }
 }
 
-fn load(a: &Resources, b: &Resources, out: &mut Vec<Change>) {
+fn load(a: &Resources, b: &Resources, t: &Thresholds, out: &mut Vec<Change>) {
     let (Some(la), Some(lb)) = (a.load, b.load) else { return };
     let ra = la.one / f64::from(a.cpu.logical_cores.max(1));
     let rb = lb.one / f64::from(b.cpu.logical_cores.max(1));
-    let sig = if rb >= 2.0 && ra < 2.0 {
+    let sig = if rb >= t.load_high && ra < t.load_high {
         Some(High)
-    } else if rb >= 1.0 && ra < 1.0 {
+    } else if rb >= t.load_medium && ra < t.load_medium {
         Some(Medium)
-    } else if lb.one >= 2.0 * la.one && rb >= 0.5 {
+    } else if lb.one >= 2.0 * la.one && rb >= t.load_medium / 2.0 {
         Some(Low)
-    } else if ra >= 1.0 && rb < 1.0 {
+    } else if ra >= t.load_medium && rb < t.load_medium {
         Some(Info)
     } else {
         None
@@ -156,7 +156,7 @@ fn pressure(a: &Resources, b: &Resources, out: &mut Vec<Change>) {
     }
 }
 
-fn disks(a: &[Disk], b: &[Disk], out: &mut Vec<Change>) {
+fn disks(a: &[Disk], b: &[Disk], t: &Thresholds, out: &mut Vec<Change>) {
     let index = |disks: &[Disk]| disks.iter().map(|d| (d.mount_point.clone(), d.clone())).collect::<BTreeMap<_, _>>();
     let (ia, ib) = (index(a), index(b));
     let describe = |d: &Disk| format!("{} ({})", d.device, d.filesystem);
@@ -193,9 +193,9 @@ fn disks(a: &[Disk], b: &[Disk], out: &mut Vec<Change>) {
             );
         }
         if let (Some(ra), Some(rb)) = (da.usage_ratio(), db.usage_ratio()) {
-            let sig = if rb >= 0.95 && ra < 0.95 {
+            let sig = if rb >= t.disk_high && ra < t.disk_high {
                 Some(High)
-            } else if rb >= 0.90 && ra < 0.90 {
+            } else if rb >= t.disk_medium && ra < t.disk_medium {
                 Some(Medium)
             } else if rb - ra >= 0.05 {
                 Some(Low)
@@ -216,9 +216,9 @@ fn disks(a: &[Disk], b: &[Disk], out: &mut Vec<Change>) {
             }
         }
         if let (Some(ra), Some(rb)) = (da.inode_usage_ratio(), db.inode_usage_ratio()) {
-            let sig = if rb >= 0.95 && ra < 0.95 {
+            let sig = if rb >= t.disk_high && ra < t.disk_high {
                 Some(High)
-            } else if rb >= 0.90 && ra < 0.90 {
+            } else if rb >= t.disk_medium && ra < t.disk_medium {
                 Some(Medium)
             } else {
                 None

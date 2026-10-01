@@ -35,6 +35,18 @@ const VOLATILE: &[&str] = &[
     "STY",
     "WINDOW",
     "TERM_PROGRAM_VERSION",
+    // Which terminal and shell Hostprint was started from (found when a
+    // capture made inside tmux was compared with one made outside it).
+    "TERM",
+    "TERM_PROGRAM",
+    "COLORTERM",
+    "SHELL",
+    // macOS session bookkeeping.
+    "XPC_SERVICE_NAME",
+    "XPC_FLAGS",
+    "__CFBundleIdentifier",
+    "SECURITYSESSIONID",
+    "LaunchInstanceID",
     "MAIL",
     "SUDO_COMMAND",
     "SUDO_UID",
@@ -55,6 +67,8 @@ const VOLATILE_PREFIXES: &[&str] = &[
     "LC_TERMINAL",
     "WEZTERM_",
     "GHOSTTY_",
+    // Hostprint's own settings, not the system's.
+    "HOSTPRINT_",
     "TERMINAL_",
 ];
 
@@ -212,6 +226,17 @@ mod tests {
         assert_eq!(c[1].after.as_deref(), Some("fp 22222222"));
         assert!(!c[1].after.as_deref().unwrap().contains("REDACTED"));
         assert_eq!(c[3].delta.as_deref(), Some("+/usr/local/go/bin"));
+    }
+
+    #[test]
+    fn terminal_variables_are_info() {
+        let (c, _) = changes(|b| {
+            let v = vars(b);
+            v.push(env("TERM", "tmux-256color"));
+            v.push(env("TERM_PROGRAM", "tmux"));
+            v.push(env("SHELL", "/bin/bash"));
+        });
+        assert!(c.iter().all(|c| c.significance == Info), "{c:#?}");
     }
 
     #[test]

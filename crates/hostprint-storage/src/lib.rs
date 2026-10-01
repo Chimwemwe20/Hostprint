@@ -408,6 +408,7 @@ mod tests {
                 uid: None,
                 elevated: false,
                 working_dir: None,
+                remote: None,
                 collectors: Vec::new(),
             },
             host: None,
