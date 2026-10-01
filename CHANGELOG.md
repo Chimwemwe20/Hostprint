@@ -52,6 +52,27 @@
   and dark) of a snapshot or of a comparison; `--format markdown` too.
   Bundles now include `report.html`.
 - The terminal UI is behind the default `tui` cargo feature.
+- Diff policies: `[[policy.rules]]` in `config.toml` (or a `--policy` file)
+  set a rule's level or turn it off, by rule-id glob and optionally subject
+  glob; `[policy.thresholds]` moves the disk, memory and load limits. Adjusted
+  changes record their default level and the policy rule (`policy` in JSON,
+  marked in every output); changes turned off are counted in a note.
+- `hostprint policy show` (effective policy, warnings for entries matching no
+  rule) and `hostprint policy rules` (every rule id).
+
+- Capture over SSH: `hostprint capture ssh://[user@]host[:port]`, and
+  `ssh://` on either side of `diff` (`hostprint diff ssh://web-1
+  ssh://web-2`). Uses the system ssh client, streams the binary to a private
+  temporary directory and removes it afterwards; per-host fingerprint keys
+  keep secret changes comparable between captures of the same host.
+  `--remote-binary` sends a different build. Snapshots record
+  `capture.remote`.
+- `HOSTPRINT_*` variables are INFO in diffs.
+
+### Fixed
+
+- Piping output into a command that exits early (`hostprint list | head`)
+  no longer panics with "Broken pipe".
 
 ### Changed
 

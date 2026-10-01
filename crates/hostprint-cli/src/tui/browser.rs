@@ -9,7 +9,7 @@ use crate::style::clip;
 use crate::{bundle, capture, show, App, CaptureOptions};
 use anyhow::Result;
 use hostprint_core::Config;
-use hostprint_diff::{Category, Change, Diff, Significance};
+use hostprint_diff::{Category, Change, Diff, DiffOptions, Significance};
 use hostprint_model::format::{bytes, duration};
 use hostprint_model::{CollectorStatus, Snapshot};
 use hostprint_storage::{Entry, Kind};
@@ -34,6 +34,7 @@ pub fn run(app: &App) -> Result<ExitCode> {
 pub(crate) struct Browser<'a> {
     app: &'a App,
     config: Config,
+    opts: DiffOptions,
     tab: Kind,
     entries: Vec<Entry>,
     table: TableState,
@@ -81,9 +82,11 @@ struct DiffView {
 
 impl<'a> Browser<'a> {
     pub fn new(app: &'a App, config: Config) -> Result<Browser<'a>> {
+        let opts = app.diff_options(&config)?;
         let mut b = Browser {
             app,
             config,
+            opts,
             tab: Kind::Snapshot,
             entries: Vec::new(),
             table: TableState::default(),
@@ -117,7 +120,7 @@ impl<'a> Browser<'a> {
     }
 
     fn open_diff(&mut self, from: Snapshot, to: Snapshot) {
-        let diff = hostprint_diff::diff(&from, &to, &App::diff_options(&self.config));
+        let diff = hostprint_diff::diff(&from, &to, &self.opts);
         let mut table = TableState::default();
         table.select(if diff.changes.is_empty() { None } else { Some(0) });
         let mut view = DiffView { diff, from, to, min: Significance::Low, category: None, table, detail: false };
@@ -945,6 +948,15 @@ fn draw_change_detail(frame: &mut Frame, c: &Change) {
         lines.push(Line::from(vec![label("change"), Span::raw(d.clone())]));
     }
     lines.push(Line::raw(""));
+    if let Some(p) = &c.policy {
+        lines.push(Line::from(vec![
+            label("policy"),
+            Span::styled(
+                format!("level set by {} (default {})", p.matched, p.default.label()),
+                Style::new().fg(Color::Yellow),
+            ),
+        ]));
+    }
     lines.push(Line::styled("Evidence, not a cause. esc closes.", dim()));
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
@@ -960,7 +972,7 @@ mod tests {
     fn app(tag: &str) -> App {
         let root = std::env::temp_dir().join(format!("hostprint-tui-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        App { store: Store::new(root), style: TextStyle::plain(), err_style: TextStyle::plain() }
+        App { store: Store::new(root), style: TextStyle::plain(), err_style: TextStyle::plain(), policy_file: None }
     }
 
     #[test]

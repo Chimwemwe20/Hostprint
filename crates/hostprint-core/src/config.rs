@@ -16,6 +16,49 @@ pub struct Config {
     pub logs: LogsConfig,
     pub redact: Redact,
     pub ignore: Ignore,
+    pub policy: PolicyConfig,
+}
+
+/// `[policy]` in `config.toml`, or the whole of a `--policy` file: level
+/// overrides for diff rules, and thresholds.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PolicyConfig {
+    /// Checked in order; the first entry matching a change applies.
+    pub rules: Vec<PolicyRuleConfig>,
+    pub thresholds: ThresholdsConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PolicyRuleConfig {
+    /// Rule id, `*` wildcards allowed: "container.*".
+    pub rule: String,
+    /// Only changes about this subject, `*` wildcards allowed.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// "off", "info", "low", "medium" or "high".
+    pub level: String,
+}
+
+/// Percentages and load ratios; unset values keep the built-in defaults.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThresholdsConfig {
+    pub disk_high_percent: Option<f64>,
+    pub disk_medium_percent: Option<f64>,
+    pub memory_available_high_percent: Option<f64>,
+    pub load_high_per_core: Option<f64>,
+    pub load_medium_per_core: Option<f64>,
+}
+
+impl PolicyConfig {
+    /// Loads a standalone policy file: `[[rules]]` and `[thresholds]` at the
+    /// top level, the same shape as `[policy]` in `config.toml`.
+    pub fn load(path: &Path) -> Result<PolicyConfig, ConfigError> {
+        let err = |message: String| ConfigError { path: path.to_path_buf(), message };
+        let contents = std::fs::read_to_string(path).map_err(|e| err(e.to_string()))?;
+        toml::from_str(&contents).map_err(|e| err(e.to_string()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -207,6 +250,31 @@ mod tests {
         assert_eq!(config.logs.since, "20m", "the design doc's journal_since name works");
         assert!(config.logs.docker);
         assert_eq!(config.collectors.disable, ["runtimes"]);
+    }
+
+    #[test]
+    fn parses_policies() {
+        let config = Config::parse(
+            "[[policy.rules]]\nrule = \"container.recreated\"\nlevel = \"off\"\n\n\
+             [[policy.rules]]\nrule = \"container.*\"\nsubject = \"payments-*\"\nlevel = \"high\"\n\n\
+             [policy.thresholds]\ndisk_high_percent = 85\n",
+        )
+        .unwrap();
+        assert_eq!(config.policy.rules.len(), 2);
+        assert_eq!(config.policy.rules[1].subject.as_deref(), Some("payments-*"));
+        assert_eq!(config.policy.thresholds.disk_high_percent, Some(85.0));
+        assert_eq!(config.policy.thresholds.load_high_per_core, None);
+
+        let dir = std::env::temp_dir().join(format!("hostprint-policy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("team.toml");
+        std::fs::write(&file, "[[rules]]\nrule = \"git.*\"\nlevel = \"low\"\n[thresholds]\nload_high_per_core = 4\n")
+            .unwrap();
+        let p = PolicyConfig::load(&file).unwrap();
+        assert_eq!((p.rules[0].rule.as_str(), p.thresholds.load_high_per_core), ("git.*", Some(4.0)));
+        std::fs::write(&file, "[[rules]]\nrule = \"git.*\"\n").unwrap();
+        assert!(PolicyConfig::load(&file).unwrap_err().to_string().contains("level"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

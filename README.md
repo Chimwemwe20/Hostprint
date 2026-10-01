@@ -106,8 +106,8 @@ Run `hostprint doctor` to see what it can observe on your machine.
 ## Usage
 
 ```text
-hostprint capture  [--name NAME] [--logs-since 30m] [--repo DIR] [--env-file FILE] [--file PATH]
-                   [--only LIST] [--skip LIST] [--json] [--force]
+hostprint capture  [ssh://[user@]host[:port]] [--name NAME] [--logs-since 30m] [--repo DIR]
+                   [--env-file FILE] [--file PATH] [--only LIST] [--skip LIST] [--json] [--force]
 hostprint list
 hostprint show     NAME [--section processes|ports|interfaces|disks|services|containers|env|runtimes|files|logs|collectors] [--json]
 hostprint diff     FROM [TO] [--format text|json|markdown] [--all] [--min LEVEL] [--fail-on LEVEL]
@@ -120,6 +120,7 @@ hostprint check    BASELINE [--format ...] [--fail-on LEVEL]
 hostprint export   NAME [--output FILE]
 hostprint delete   NAME
 hostprint doctor
+hostprint policy   show | rules
 ```
 
 - **Compare against now.** `hostprint diff healthy` captures the current state
@@ -133,6 +134,10 @@ hostprint doctor
 - **Script it.** `--json` everywhere, `--format markdown` for tickets and pull
   requests, and `--fail-on medium` exits with status 1 when something at or
   above MEDIUM changed.
+- **Tune it.** A policy raises, lowers or silences rules for your site
+  (`container.*` for `payments-*` is HIGH, `container.recreated` is off) and
+  moves thresholds. Put it in `config.toml`, or share one with
+  `--policy team-policy.toml`. See [Policies](docs/diff-rules.md#policies).
 - **Record your application.** `--repo` points the Git collector at your
   deployment, `--env-file` records a dotenv file, `--file` fingerprints a
   config file. All of these can be set permanently in `config.toml`.
@@ -194,6 +199,24 @@ The report is a single file with inline styles, no scripts and no external
 resources, so it opens the same from an email attachment or a ticket. It
 follows the reader's light or dark preference. Bundles include it as
 `report.html`.
+
+### Other machines, over SSH
+
+```sh
+hostprint capture ssh://deploy@web-1 --name web-1-healthy
+hostprint diff web-1-healthy ssh://deploy@web-1    # what changed on web-1 since then
+hostprint diff ssh://web-1 ssh://web-2             # how do two servers differ, right now
+```
+
+Nothing is installed on the remote. Hostprint uses your `ssh` client, so your
+keys, agent, `~/.ssh/config` and known_hosts apply. It streams a copy of
+itself to a private temporary directory, captures, returns the snapshot and
+removes the directory, even if the capture fails. The remote needs Linux on
+the same architecture, plus `sh`, `tar` and `base64` (any distribution,
+BusyBox included). Send a statically built binary
+(`docker build --target binary --output dist .`); `--remote-binary` picks a
+different one, for example an ARM64 build. Capture options such as
+`--logs-since`, `--only` and `--repo` are passed through.
 
 ### Baselines and checks
 
@@ -286,6 +309,15 @@ ports = [5353]
 env = ["BUILD_*"]
 containers = ["buildkit*"]
 services = ["apt-daily*"]
+
+[[policy.rules]]             # adjust rule levels; first match wins
+rule = "container.*"
+subject = "payments-*"
+level = "high"               # off, info, low, medium, high
+
+[policy.thresholds]
+disk_high_percent = 85
+disk_medium_percent = 80
 ```
 
 ## Snapshot format
@@ -301,10 +333,10 @@ Done:
 - **v0.1:** capture, list, show, diff, doctor, JSON output, secret redaction.
 - **v0.2:** incident bundles, journal / Docker / file log collection,
   Markdown reports, baselines and `check`, configurable collectors, export.
-- **v0.3 (part):** terminal UI (`tui`), live dashboard (`watch`), standalone
-  HTML reports.
+- **v0.3:** terminal UI (`tui`), live dashboard (`watch`), standalone HTML
+  reports, diff policies, capture over SSH.
 
-Next: custom diff policies, macOS support, capture over SSH.
+Next: macOS support.
 
 ## Developing
 

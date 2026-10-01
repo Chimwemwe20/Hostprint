@@ -66,6 +66,7 @@ pub fn capture(name: &str, ctx: &CaptureContext, collectors: &[Arc<dyn Collector
             uid,
             elevated: uid == Some(0),
             working_dir: std::env::current_dir().ok().map(|d| d.display().to_string()),
+            remote: None,
             collectors: Vec::with_capacity(outcomes.len()),
         },
         host: None,

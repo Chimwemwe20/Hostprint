@@ -344,3 +344,71 @@ fn interactive_commands_need_a_terminal() {
     }
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn policies_adjust_levels_and_exit_codes() {
+    let home = temp_home("policy");
+    assert_ok(&hostprint(&home, &["capture", "--name", "s", "--quiet"]));
+    let mut snap: Value = serde_json::from_str(&std::fs::read_to_string(home.join("snapshots/s.hp")).unwrap()).unwrap();
+    snap["name"] = "edited".into();
+    snap["host"]["hostname"] = "renamed-host".into(); // system.hostname: MEDIUM
+    let edited = home.join("edited.hp");
+    std::fs::write(&edited, serde_json::to_vec(&snap).unwrap()).unwrap();
+    let edited = edited.to_str().unwrap();
+    assert_eq!(hostprint(&home, &["diff", "s", edited, "--fail-on", "medium"]).status.code(), Some(1));
+
+    // A policy file lowers it: the check passes, and the output says why.
+    let file = home.join("team-policy.toml");
+    std::fs::write(&file, "[[rules]]\nrule = \"system.hostname\"\nlevel = \"low\"\n").unwrap();
+    let file = file.to_str().unwrap();
+    let out = hostprint(&home, &["diff", "s", edited, "--fail-on", "medium", "--policy", file]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).contains("[policy: was MEDIUM]"), "{}", stdout(&out));
+    let json: Value =
+        serde_json::from_slice(&hostprint(&home, &["--policy", file, "diff", "s", edited, "--json"]).stdout).unwrap();
+    let change = &json["changes"][0];
+    assert_eq!((change["significance"].as_str(), change["policy"]["default"].as_str()), (Some("low"), Some("medium")));
+
+    // config.toml turns system.* off; the --policy file still wins for the hostname.
+    std::fs::write(home.join("config.toml"), "[[policy.rules]]\nrule = \"system.*\"\nlevel = \"off\"\n\n[[policy.rules]]\nrule = \"sytem.kernel\"\nlevel = \"high\"\n").unwrap();
+    let out = hostprint(&home, &["diff", "s", edited]);
+    assert!(stdout(&out).contains("Policy turned off 1 change: system.hostname ×1."), "{}", stdout(&out));
+    assert!(stdout(&hostprint(&home, &["diff", "s", edited, "--policy", file])).contains("[policy: was MEDIUM]"));
+
+    // `policy show` explains the effective policy and flags the typo.
+    let show = hostprint(&home, &["policy", "show", "--policy", file]);
+    assert_ok(&show);
+    let text = stdout(&show);
+    assert!(text.contains("system.hostname → LOW"), "{text}");
+    assert!(text.contains("sytem.kernel → HIGH") && text.contains("matches no rule"), "{text}");
+    assert!(stdout(&hostprint(&home, &["policy", "rules"])).contains("container.health"));
+
+    // Invalid levels and thresholds are errors, not silently ignored.
+    std::fs::write(home.join("config.toml"), "[[policy.rules]]\nrule = \"git.*\"\nlevel = \"severe\"\n").unwrap();
+    let bad = hostprint(&home, &["diff", "s", edited]);
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown level 'severe'"));
+    std::fs::write(home.join("config.toml"), "[policy.thresholds]\ndisk_high_percent = 150\n").unwrap();
+    assert_eq!(hostprint(&home, &["diff", "s", edited]).status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Regression: `hostprint policy rules | head` used to panic with "Broken pipe".
+#[test]
+fn a_closed_pipe_ends_quietly() {
+    let home = temp_home("pipe");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hostprint"))
+        .args(["policy", "rules"])
+        .env("HOSTPRINT_HOME", &home)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Close the reading end before the first write, as an early-exiting
+    // `head` would, so every write fails.
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert_ne!(out.status.code(), Some(101), "exit status of a Rust panic");
+}

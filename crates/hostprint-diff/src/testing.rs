@@ -138,6 +138,7 @@ pub fn baseline() -> Snapshot {
             uid: Some(1000),
             elevated: false,
             working_dir: Some("/srv/app".into()),
+            remote: None,
             collectors: [
                 "system",
                 "resources",

@@ -61,6 +61,7 @@ pub fn snapshot(name: &str, secs: i64) -> Snapshot {
             uid: Some(1000),
             elevated: false,
             working_dir: None,
+            remote: None,
             collectors: ["system", "resources", "processes", "services", "docker", "git"]
                 .iter()
                 .map(|n| report(n, CollectorStatus::Ok))

@@ -17,6 +17,48 @@ Significance levels:
 Hostprint reports evidence, not conclusions. A HIGH change means "look here
 first", not "this caused the incident".
 
+## Policies
+
+The levels below are defaults. A policy adjusts them for your site, in
+`config.toml` or in a separate file passed with `--policy` (useful for a
+team-wide policy checked into a repository):
+
+```toml
+# config.toml: under [policy]. A --policy file: the same keys at the top level
+# ([[rules]], [thresholds]).
+
+[[policy.rules]]
+rule = "container.recreated"   # rule id; * wildcards allowed
+level = "off"                  # off, info, low, medium or high
+
+[[policy.rules]]
+rule = "container.*"
+subject = "payments-*"         # only changes about these subjects
+level = "high"
+
+[policy.thresholds]
+disk_high_percent = 85         # default 95
+disk_medium_percent = 80       # default 90
+memory_available_high_percent = 15   # default 10
+load_high_per_core = 4.0       # default 2.0
+load_medium_per_core = 2.0     # default 1.0
+```
+
+- Rules are checked in order and the first match applies; rules from a
+  `--policy` file come before those in `config.toml`, so the file wins.
+  Thresholds layer the same way: defaults, then `config.toml`, then the file.
+- A policy only changes levels. It never creates changes or hides how a level
+  was reached. A change whose level was set by a policy carries a `policy`
+  field in JSON (its default level and the matching policy rule), and is
+  marked in the text, TUI, Markdown and HTML output. Changes a policy turns
+  off are counted in a note: "Policy turned off 2 changes: container.recreated
+  ×2."
+- Thresholds apply to `disk.usage` and `disk.inodes` (HIGH and MEDIUM),
+  `memory.available` (HIGH) and `load.average` (HIGH and MEDIUM).
+- `hostprint policy rules` lists every rule id. `hostprint policy show`
+  prints the effective policy and warns about entries that match no rule,
+  usually a typo. Unknown levels and inconsistent thresholds are errors.
+
 ## Noise reduction
 
 Some values change on every capture. They are never compared directly:

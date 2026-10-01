@@ -41,7 +41,8 @@ pub fn run(app: &App, args: BundleArgs) -> Result<ExitCode> {
         }
     };
     let baseline = args.against.as_deref().map(|r| app.store.resolve(r)).transpose()?;
-    let diff = baseline.as_ref().map(|b| hostprint_diff::diff(b, &snapshot, &App::diff_options(&config)));
+    let opts = app.diff_options(&config)?;
+    let diff = baseline.as_ref().map(|b| hostprint_diff::diff(b, &snapshot, &opts));
 
     let written = write(&snapshot, baseline.as_ref(), diff.as_ref(), args.output)?;
     let (output, root, files) = (written.path, written.root, written.files);

@@ -71,6 +71,9 @@ pub fn overview(s: &Snapshot, style: &Style) -> Vec<String> {
         (false, _) => " (not root: other users' details may be partial)",
     };
     out.push(row(style, "by", format!("{user}{privilege}")));
+    if let Some(remote) = &s.capture.remote {
+        out.push(row(style, "via", remote));
+    }
 
     if let Some(h) = &s.host {
         let mut parts = vec![h.hostname.clone()];

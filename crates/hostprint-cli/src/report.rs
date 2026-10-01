@@ -22,7 +22,7 @@ pub fn run(app: &App, args: ReportArgs) -> Result<ExitCode> {
     let (snapshot, diff) = match &args.to {
         Some(to) => {
             let to = app.store.resolve(to)?;
-            let diff = hostprint_diff::diff(&first, &to, &App::diff_options(&config));
+            let diff = hostprint_diff::diff(&first, &to, &app.diff_options(&config)?);
             (to, Some(diff))
         }
         None => (first, None),
@@ -128,9 +128,14 @@ pub fn diff_markdown(diff: &Diff, min: Significance) -> String {
                 ChangeKind::Removed => (cell(c.before.as_deref()), "—".to_string()),
                 ChangeKind::Changed => (cell(c.before.as_deref()), cell(c.after.as_deref())),
             };
+            let policy = c
+                .policy
+                .as_ref()
+                .map(|p| format!(" (policy: default {}, set by {})", p.default.label(), escape(&p.matched)))
+                .unwrap_or_default();
             let _ = writeln!(
                 md,
-                "| {} | {} | {} | {before} | {after} | {} | {} |",
+                "| {} | {} | {} | {before} | {after} | {} | {}{policy} |",
                 title_case(c.category.label()),
                 escape(&c.subject),
                 escape(c.field.as_deref().unwrap_or("")),

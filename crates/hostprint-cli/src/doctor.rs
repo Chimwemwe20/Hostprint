@@ -37,6 +37,13 @@ pub fn run(app: &App) -> Result<ExitCode> {
             },
         ),
         ("Git", git(&ctx)),
+        (
+            "SSH client",
+            match which("ssh") {
+                Some(p) => Check::Ok(format!("{} (capture ssh://host)", p.display())),
+                None => Check::Absent("not found (remote capture unavailable)".into()),
+            },
+        ),
         ("Snapshot directory", snapshot_dir(app)),
         ("Configuration", config(app)),
     ];

@@ -95,9 +95,20 @@ fn diff_section(h: &mut String, d: &Diff) {
                 ChangeKind::Removed => (c.before.clone().unwrap_or_default(), String::new()),
                 ChangeKind::Changed => (c.before.clone().unwrap_or_default(), c.after.clone().unwrap_or_default()),
             };
+            let policy = c
+                .policy
+                .as_ref()
+                .map(|p| {
+                    format!(
+                        "<br><span class=\"badge medium\" title=\"set by {}\">policy · default {}</span>",
+                        esc(&p.matched),
+                        p.default.label()
+                    )
+                })
+                .unwrap_or_default();
             let _ = write!(
                 h,
-                "<tr><td>{}</td><td><b>{}</b></td><td>{}</td><td class=\"v\">{}</td><td class=\"v\"><b>{}</b></td><td>{}</td><td><code>{}</code></td></tr>",
+                "<tr><td>{}</td><td><b>{}</b></td><td>{}</td><td class=\"v\">{}</td><td class=\"v\"><b>{}</b></td><td>{}</td><td><code>{}</code>{policy}</td></tr>",
                 esc(&title_case(c.category.label())),
                 esc(&c.subject),
                 esc(c.field.as_deref().unwrap_or("")),

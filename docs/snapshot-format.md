@@ -60,6 +60,7 @@ empty one. `capture.collectors` says why.
   "uid": 1000,
   "elevated": false,
   "workingDir": "/srv/app",
+  "remote": "ssh://deploy@web-1",
   "collectors": [
     { "name": "processes", "status": "partial", "durationMs": 268, "summary": "412 processes",
       "notes": ["executable paths unavailable for 37 processes owned by other users (run as root for full details)"] },
@@ -68,6 +69,9 @@ empty one. `capture.collectors` says why.
   ]
 }
 ```
+
+`remote` is present only for snapshots captured over SSH (`capture ssh://…`);
+everything else describes the remote machine as it saw itself.
 
 `status` is one of:
 

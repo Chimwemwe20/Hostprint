@@ -81,6 +81,10 @@ pub struct CaptureInfo {
     pub elevated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
+    /// Set when the snapshot was captured on another machine, e.g.
+    /// `ssh://deploy@web-1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
     pub collectors: Vec<CollectorReport>,
 }
 

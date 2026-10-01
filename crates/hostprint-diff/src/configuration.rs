@@ -61,6 +61,8 @@ const VOLATILE_PREFIXES: &[&str] = &[
     "LC_TERMINAL",
     "WEZTERM_",
     "GHOSTTY_",
+    // Hostprint's own settings, not the system's.
+    "HOSTPRINT_",
     "TERMINAL_",
 ];
 

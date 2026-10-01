@@ -11,7 +11,7 @@ use anyhow::{bail, Result};
 use chrono::{DateTime, Local, Utc};
 use hostprint_core::config::parse_duration;
 use hostprint_core::Config;
-use hostprint_diff::{Change, Diff, Significance};
+use hostprint_diff::{Change, Diff, DiffOptions, Significance};
 use hostprint_model::format::{bytes, duration};
 use hostprint_model::{Container, Service, Snapshot};
 use hostprint_storage::Kind;
@@ -38,7 +38,8 @@ pub fn run(app: &App, args: WatchArgs) -> Result<ExitCode> {
         Some(name) => Some((app.store.load_from(Kind::Baseline, name)?, format!("baseline '{name}'"))),
         None => None,
     };
-    let mut watch = Watch::new(app, config, args.options, interval, reference);
+    let opts = app.diff_options(&config)?;
+    let mut watch = Watch::new(app, config, opts, args.options, interval, reference);
     run_view(&mut watch)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -46,6 +47,7 @@ pub fn run(app: &App, args: WatchArgs) -> Result<ExitCode> {
 pub(crate) struct Watch<'a> {
     app: &'a App,
     config: Config,
+    opts: DiffOptions,
     options: CaptureOptions,
     interval: Duration,
     paused: bool,
@@ -68,6 +70,7 @@ impl<'a> Watch<'a> {
     pub fn new(
         app: &'a App,
         config: Config,
+        opts: DiffOptions,
         options: CaptureOptions,
         interval: Duration,
         reference: Option<(Snapshot, String)>,
@@ -79,6 +82,7 @@ impl<'a> Watch<'a> {
         Watch {
             app,
             config,
+            opts,
             options,
             interval,
             paused: false,
@@ -108,9 +112,9 @@ impl<'a> Watch<'a> {
     /// Folds a new capture into the reference, drift and timeline.
     pub fn on_capture(&mut self, snapshot: Snapshot) {
         self.captures += 1;
-        let opts = App::diff_options(&self.config);
+        let opts = &self.opts;
         if let Some(previous) = &self.latest {
-            let step = hostprint_diff::diff(previous, &snapshot, &opts);
+            let step = hostprint_diff::diff(previous, &snapshot, opts);
             for change in step.changes.into_iter().rev().filter(|c| c.significance >= Significance::Low) {
                 self.timeline.push_front((snapshot.captured_at, change));
             }
@@ -120,7 +124,7 @@ impl<'a> Watch<'a> {
             self.reference_label = format!("first capture at {}", local_time(snapshot.captured_at));
             self.reference = Some(snapshot.clone());
         }
-        self.drift = self.reference.as_ref().map(|r| hostprint_diff::diff(r, &snapshot, &opts));
+        self.drift = self.reference.as_ref().map(|r| hostprint_diff::diff(r, &snapshot, opts));
         self.latest = Some(snapshot);
     }
 
@@ -443,11 +447,18 @@ mod tests {
     fn app(tag: &str) -> App {
         let root = std::env::temp_dir().join(format!("hostprint-watch-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        App { store: Store::new(root), style: TextStyle::plain(), err_style: TextStyle::plain() }
+        App { store: Store::new(root), style: TextStyle::plain(), err_style: TextStyle::plain(), policy_file: None }
     }
 
     fn watch(app: &App) -> Watch<'_> {
-        let mut w = Watch::new(app, Config::default(), CaptureOptions::default(), Duration::from_secs(10), None);
+        let mut w = Watch::new(
+            app,
+            Config::default(),
+            DiffOptions::default(),
+            CaptureOptions::default(),
+            Duration::from_secs(10),
+            None,
+        );
         w.paused = true; // tests feed captures by hand
         w
     }
