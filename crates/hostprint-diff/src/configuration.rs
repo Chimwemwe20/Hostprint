@@ -41,6 +41,12 @@ const VOLATILE: &[&str] = &[
     "TERM_PROGRAM",
     "COLORTERM",
     "SHELL",
+    // macOS session bookkeeping.
+    "XPC_SERVICE_NAME",
+    "XPC_FLAGS",
+    "__CFBundleIdentifier",
+    "SECURITYSESSIONID",
+    "LaunchInstanceID",
     "MAIL",
     "SUDO_COMMAND",
     "SUDO_UID",

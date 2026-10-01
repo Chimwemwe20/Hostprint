@@ -18,6 +18,10 @@ impl Collector for NetworkCollector {
     }
 
     fn collect(&self, ctx: &CaptureContext) -> Result<Collected, CollectError> {
+        #[cfg(target_os = "macos")]
+        if ctx.is_live() {
+            return crate::macos::live::network(ctx);
+        }
         ctx.require_linux()?;
         let mut sockets = Vec::new();
         let mut readable = 0;
@@ -305,36 +309,46 @@ fn interface_addresses() -> HashMap<String, Vec<String>> {
                 continue;
             }
             let name = std::ffi::CStr::from_ptr(ifa.ifa_name).to_string_lossy().into_owned();
-            let cidr = match i32::from((*ifa.ifa_addr).sa_family) {
-                libc::AF_INET => {
-                    let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in);
-                    let ip = Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr));
-                    let prefix = if ifa.ifa_netmask.is_null() {
-                        32
-                    } else {
-                        let nm = &*(ifa.ifa_netmask as *const libc::sockaddr_in);
-                        nm.sin_addr.s_addr.count_ones()
-                    };
-                    format!("{ip}/{prefix}")
-                }
-                libc::AF_INET6 => {
-                    let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
-                    let ip = Ipv6Addr::from(sa.sin6_addr.s6_addr);
-                    let prefix = if ifa.ifa_netmask.is_null() {
-                        128
-                    } else {
-                        let nm = &*(ifa.ifa_netmask as *const libc::sockaddr_in6);
-                        nm.sin6_addr.s6_addr.iter().map(|b| b.count_ones()).sum::<u32>()
-                    };
-                    format!("{ip}/{prefix}")
-                }
-                _ => continue,
-            };
-            out.entry(name).or_default().push(cidr);
+            if let Some(cidr) = ifaddr_cidr(ifa) {
+                out.entry(name).or_default().push(cidr);
+            }
         }
         libc::freeifaddrs(head);
     }
     out
+}
+
+/// The address of an IPv4 or IPv6 `ifaddrs` entry in CIDR notation.
+///
+/// # Safety
+/// `ifa` must come from `getifaddrs`, with a non-null `ifa_addr`.
+#[cfg(unix)]
+pub(crate) unsafe fn ifaddr_cidr(ifa: &libc::ifaddrs) -> Option<String> {
+    match i32::from((*ifa.ifa_addr).sa_family) {
+        libc::AF_INET => {
+            let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+            let ip = Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr));
+            let prefix = if ifa.ifa_netmask.is_null() {
+                32
+            } else {
+                let nm = &*(ifa.ifa_netmask as *const libc::sockaddr_in);
+                nm.sin_addr.s_addr.count_ones()
+            };
+            Some(format!("{ip}/{prefix}"))
+        }
+        libc::AF_INET6 => {
+            let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
+            let ip = Ipv6Addr::from(sa.sin6_addr.s6_addr);
+            let prefix = if ifa.ifa_netmask.is_null() {
+                128
+            } else {
+                let nm = &*(ifa.ifa_netmask as *const libc::sockaddr_in6);
+                nm.sin6_addr.s6_addr.iter().map(|b| b.count_ones()).sum::<u32>()
+            };
+            Some(format!("{ip}/{prefix}"))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

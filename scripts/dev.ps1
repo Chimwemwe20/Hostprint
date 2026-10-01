@@ -5,6 +5,8 @@
 .DESCRIPTION
     Commands:
       check            fmt check, clippy and tests: what CI runs
+      check-macos      type-check and clippy the macOS build (no Mac needed;
+                       the macOS tests themselves run in CI)
       test [args]      cargo test --workspace [args]
       fmt              cargo fmt --all
       build            static release binary in dist/hostprint
@@ -88,6 +90,9 @@ Initialize-Image
 switch ($Command) {
     "check" {
         Invoke-Dev @("sh", "-c", "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace")
+    }
+    "check-macos" {
+        Invoke-Dev @("sh", "-c", 'set -e; rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null 2>&1; for t in aarch64-apple-darwin x86_64-apple-darwin; do echo clippy $t; cargo clippy --workspace --all-targets --target $t -- -D warnings; done')
     }
     "test"  { Invoke-Dev (@("cargo", "test", "--workspace") + $Rest) }
     "fmt"   { Invoke-Dev @("cargo", "fmt", "--all") }

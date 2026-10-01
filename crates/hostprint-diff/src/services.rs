@@ -23,7 +23,9 @@ pub(crate) fn compare(a: &[Service], b: &[Service], opts: &DiffOptions, out: &mu
             out.push(change(sig, "service.removed", name, "state").field("state").removed(state(x)));
             continue;
         };
-        let oneshot = [x, y].iter().any(|s| s.service_type.as_deref() == Some("oneshot"));
+        // Units that run on demand (systemd oneshots, launchd jobs) start and
+        // stop all the time; only their failures matter.
+        let oneshot = [x, y].iter().any(|s| matches!(s.service_type.as_deref(), Some("oneshot") | Some("launchd")));
         let routine = if oneshot { Info } else { Low };
 
         if state(x) != state(y) {
@@ -120,6 +122,32 @@ mod tests {
             s[2].sub_state = "start".into();
         });
         assert_eq!(rules(&c), [("apt-daily.service", "service.state", Info)]);
+    }
+
+    #[test]
+    fn launchd_jobs_come_and_go_but_failures_count() {
+        let job = |name: &str, active: &str, sub: &str| hostprint_model::Service {
+            service_type: Some("launchd".into()),
+            restarts: None,
+            active_since: None,
+            ..service(name, active, sub)
+        };
+        let a = {
+            let mut a = baseline();
+            a.services = Some(vec![
+                job("com.apple.Spotlight", "active", "running"),
+                job("homebrew.mxcl.redis", "active", "running"),
+            ]);
+            a
+        };
+        let mut b = later(&a, 600);
+        b.services =
+            Some(vec![job("com.apple.Spotlight", "inactive", "dead"), job("homebrew.mxcl.redis", "failed", "failed")]);
+        let c = diff(&a, &b, &DiffOptions::default()).changes;
+        assert_eq!(
+            rules(&c),
+            [("homebrew.mxcl.redis", "service.failed", High), ("com.apple.Spotlight", "service.stopped", Info)]
+        );
     }
 
     #[test]

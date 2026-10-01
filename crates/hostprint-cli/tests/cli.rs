@@ -1,6 +1,7 @@
-//! End-to-end tests against the real binary and the real machine (Linux).
+//! End-to-end tests against the real binary and the real machine (Linux and
+//! macOS; CI runs both).
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -411,4 +412,59 @@ fn a_closed_pipe_ends_quietly() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("panicked"), "{stderr}");
     assert_ne!(out.status.code(), Some(101), "exit status of a Rust panic");
+}
+
+/// The macOS collectors must produce real data. Runs on the macOS CI runner.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_collectors_produce_data() {
+    let home = temp_home("macos");
+    let out = hostprint(&home, &["capture", "--name", "m", "--json", "--no-save", "--quiet"]);
+    assert_ok(&out);
+    let s: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let reports = s["capture"]["collectors"].as_array().unwrap().clone();
+    for r in &reports {
+        eprintln!(
+            "{:<12} {:<8} {}",
+            r["name"],
+            r["status"],
+            r["summary"].as_str().or(r["message"].as_str()).unwrap_or("")
+        );
+    }
+    for name in ["system", "resources", "processes", "network", "services"] {
+        let r = reports.iter().find(|r| r["name"] == name).unwrap();
+        assert!(r["status"] == "ok" || r["status"] == "partial", "{name}: {r}");
+    }
+
+    let host = &s["host"];
+    assert_eq!(host["os"]["name"], "macOS", "{host}");
+    assert_eq!(host["kernelName"], "Darwin");
+    assert!(
+        host["os"]["versionId"].is_string() && host["bootTime"].is_string() && host["hardware"].is_string(),
+        "{host}"
+    );
+
+    let r = &s["resources"];
+    let total = r["memory"]["totalBytes"].as_u64().unwrap();
+    let available = r["memory"]["availableBytes"].as_u64().unwrap();
+    assert!(total > 1 << 30 && available > 0 && available <= total, "{}", r["memory"]);
+    assert!(r["cpu"]["logicalCores"].as_u64().unwrap() >= 1);
+    assert!(r["cpu"]["usagePercent"].is_number(), "top-based CPU sample: {}", r["cpu"]);
+    assert!(r["load"]["one"].is_number());
+    let disks = r["disks"].as_array().unwrap();
+    assert!(disks.iter().any(|d| d["mountPoint"] == "/" && d["totalBytes"].as_u64().unwrap_or(0) > 0), "{disks:?}");
+
+    let procs = s["processes"]["list"].as_array().unwrap();
+    assert!(procs.len() > 10, "{} processes", procs.len());
+    let launchd = procs.iter().find(|p| p["pid"] == 1).expect("pid 1");
+    assert_eq!(launchd["name"], "launchd");
+    assert!(launchd["startedAt"].is_string() && launchd["memoryBytes"].as_u64().unwrap() > 0, "{launchd}");
+
+    let net = &s["network"];
+    let lo0 = net["interfaces"].as_array().unwrap().iter().find(|i| i["name"] == "lo0").expect("lo0").clone();
+    assert!(lo0["addresses"].as_array().unwrap().iter().any(|a| a == "127.0.0.1/8"), "{lo0}");
+    assert!(net["ephemeralPorts"]["start"].as_u64().unwrap() > 1024);
+
+    assert!(!s["services"].as_array().unwrap().is_empty(), "launchd jobs");
+    let _ = std::fs::remove_dir_all(&home);
 }

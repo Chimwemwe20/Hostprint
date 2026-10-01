@@ -2,6 +2,7 @@
 # Build, test and run Hostprint inside Docker, without a local Rust toolchain.
 #
 #   ./scripts/dev.sh check            fmt check, clippy and tests: what CI runs
+#   ./scripts/dev.sh check-macos      type-check and clippy the macOS build (tests run in CI)
 #   ./scripts/dev.sh test [args]      cargo test --workspace [args]
 #   ./scripts/dev.sh fmt              cargo fmt --all
 #   ./scripts/dev.sh build            static release binary in dist/hostprint
@@ -54,6 +55,10 @@ dev() { docker run --rm "${volumes[@]}" "${tty[@]}" "$@"; }
 
 case $command in
     check) dev "$image" sh -c 'cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace' ;;
+    check-macos)
+        # shellcheck disable=SC2016 # expanded inside the container
+        dev "$image" sh -c 'set -e; rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null 2>&1; for t in aarch64-apple-darwin x86_64-apple-darwin; do echo "clippy $t"; cargo clippy --workspace --all-targets --target "$t" -- -D warnings; done'
+        ;;
     test)  dev "$image" cargo test --workspace "$@" ;;
     fmt)   dev "$image" cargo fmt --all ;;
     build) dev "$image" sh -c "$static_build" ;;

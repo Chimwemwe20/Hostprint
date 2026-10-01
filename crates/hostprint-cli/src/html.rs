@@ -131,8 +131,8 @@ fn snapshot_sections(h: &mut String, s: &Snapshot) {
         if let Some(os) = &host.os {
             dl(h, "OS", &os.display());
         }
-        if let Some(k) = &host.kernel {
-            dl(h, "Kernel", &format!("Linux {k} · {}", host.architecture));
+        if let Some(k) = host.kernel_display() {
+            dl(h, "Kernel", &format!("{k} · {}", host.architecture));
         }
         if let Some(up) = host.uptime_seconds {
             dl(h, "Uptime", &duration(up));

@@ -4,6 +4,8 @@ use anyhow::Result;
 use hostprint_collectors::docker::DockerCollector;
 use hostprint_collectors::git::GitCollector;
 use hostprint_collectors::redact::Redactor;
+use hostprint_collectors::services::ServiceCollector;
+use hostprint_collectors::system::SystemCollector;
 use hostprint_collectors::{which, CaptureContext, CollectError, Collector};
 use hostprint_core::Config;
 use std::path::Path;
@@ -23,12 +25,20 @@ pub fn run(app: &App) -> Result<ExitCode> {
     let mut ctx = CaptureContext::new(Redactor::new(b"doctor"));
     ctx.command_timeout = std::time::Duration::from_secs(3);
 
-    let checks = vec![
-        ("Platform", platform()),
-        ("/proc", proc_fs()),
-        ("Permissions", permissions()),
-        ("Docker", probe(&DockerCollector, &ctx)),
-        ("systemd", systemd()),
+    let mut checks = vec![("Platform", platform(&ctx))];
+    if cfg!(target_os = "macos") {
+        checks.push(("System tools", macos_tools()));
+    } else {
+        checks.push(("/proc", proc_fs()));
+    }
+    checks.push(("Permissions", permissions()));
+    checks.push(("Docker", probe(&DockerCollector, &ctx)));
+    if cfg!(target_os = "macos") {
+        checks.push(("launchd", probe(&ServiceCollector, &ctx)));
+    } else {
+        checks.push(("systemd", systemd()));
+    }
+    checks.extend([
         (
             "journalctl",
             match which("journalctl") {
@@ -46,7 +56,7 @@ pub fn run(app: &App) -> Result<ExitCode> {
         ),
         ("Snapshot directory", snapshot_dir(app)),
         ("Configuration", config(app)),
-    ];
+    ]);
 
     println!("{}\n", style.bold("Hostprint Doctor"));
     for (name, check) in checks {
@@ -61,17 +71,36 @@ pub fn run(app: &App) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn platform() -> Check {
-    if !cfg!(target_os = "linux") {
-        return Check::Fail(format!("{} is not supported yet; Hostprint v0.1 targets Linux", std::env::consts::OS));
+fn platform(ctx: &CaptureContext) -> Check {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return Check::Fail(format!(
+            "{} is not supported yet; Hostprint runs on Linux and macOS",
+            std::env::consts::OS
+        ));
     }
-    let os = std::fs::read_to_string("/etc/os-release")
-        .ok()
-        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string())))
-        .unwrap_or_else(|| "Linux".into());
-    let kernel =
-        std::fs::read_to_string("/proc/sys/kernel/osrelease").map(|k| k.trim().to_string()).unwrap_or_default();
-    Check::Ok(format!("{os} · kernel {kernel} · {}", std::env::consts::ARCH))
+    match SystemCollector.collect(ctx) {
+        Ok(c) => Check::Ok(format!("{} · {}", c.summary.unwrap_or_default(), std::env::consts::ARCH)),
+        Err(e) => Check::Fail(e.to_string()),
+    }
+}
+
+/// The macOS tools the collectors run.
+fn macos_tools() -> Check {
+    let tools = [
+        "/bin/ps",
+        "/usr/bin/vm_stat",
+        "/usr/bin/top",
+        "/usr/sbin/netstat",
+        "/usr/sbin/lsof",
+        "/sbin/route",
+        "/bin/launchctl",
+    ];
+    let missing: Vec<&str> = tools.iter().copied().filter(|t| !Path::new(t).exists()).collect();
+    if missing.is_empty() {
+        Check::Ok("ps, vm_stat, top, netstat, lsof, route, launchctl".into())
+    } else {
+        Check::Warn(format!("missing {}; some sections will be incomplete", missing.join(", ")))
+    }
 }
 
 fn proc_fs() -> Check {

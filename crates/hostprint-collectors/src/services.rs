@@ -22,6 +22,10 @@ impl Collector for ServiceCollector {
     }
 
     fn collect(&self, ctx: &CaptureContext) -> Result<Collected, CollectError> {
+        #[cfg(target_os = "macos")]
+        if ctx.is_live() {
+            return crate::macos::live::services(ctx);
+        }
         ctx.require_linux()?;
         if !Path::new("/run/systemd/system").exists() {
             return Err(CollectError::Unavailable("systemd is not running".into()));

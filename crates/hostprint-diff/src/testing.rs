@@ -165,6 +165,7 @@ pub fn baseline() -> Snapshot {
                 pretty_name: Some("Ubuntu 24.04.1 LTS".into()),
             }),
             kernel: Some("6.8.0-45-generic".into()),
+            kernel_name: Some("Linux".into()),
             architecture: "x86_64".into(),
             boot_time: Some(boot),
             uptime_seconds: Some(3600),

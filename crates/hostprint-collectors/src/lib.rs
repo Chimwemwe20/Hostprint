@@ -13,6 +13,7 @@ pub mod environment;
 pub mod files;
 pub mod git;
 pub mod logs;
+mod macos;
 pub mod network;
 pub mod processes;
 pub mod redact;

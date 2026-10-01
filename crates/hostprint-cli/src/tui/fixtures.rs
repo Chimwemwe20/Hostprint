@@ -72,6 +72,7 @@ pub fn snapshot(name: &str, secs: i64) -> Snapshot {
             hostname: "web-1".into(),
             os: None,
             kernel: Some("6.8.0".into()),
+            kernel_name: None,
             architecture: "x86_64".into(),
             boot_time: Some(at(-3600)),
             uptime_seconds: Some(3600),

@@ -162,6 +162,14 @@ fn preflight(target: &Target, check_arch: bool) -> Result<()> {
     if os != "Linux" {
         bail!("{} runs {os}; remote capture supports Linux", target.url());
     }
+    // Without --remote-binary we send ourselves, which must be a Linux build.
+    if check_arch && !cfg!(target_os = "linux") {
+        bail!(
+            "this hostprint is a {} build and {} runs Linux; pass a Linux {arch} build with --remote-binary",
+            std::env::consts::OS,
+            target.url()
+        );
+    }
     if check_arch && arch != std::env::consts::ARCH {
         bail!(
             "{} is {arch} and this hostprint is {}; pass a {arch} build with --remote-binary",

@@ -147,6 +147,19 @@ pub(crate) fn clock_ticks() -> u64 {
     100
 }
 
+/// Truncates to at most `max` bytes on a character boundary, marking the cut.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn clip(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
 pub(crate) fn round1(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }

@@ -24,6 +24,10 @@ impl Collector for ProcessCollector {
     }
 
     fn collect(&self, ctx: &CaptureContext) -> Result<Collected, CollectError> {
+        #[cfg(target_os = "macos")]
+        if ctx.is_live() {
+            return crate::macos::live::processes(ctx);
+        }
         ctx.require_linux()?;
         let proc_dir = ctx.path("/proc");
         let boot = std::fs::read_to_string(ctx.path("/proc/stat"))

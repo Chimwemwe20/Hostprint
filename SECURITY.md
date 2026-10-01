@@ -69,7 +69,15 @@ review them before sharing.
 
 **It does not need root.** Without root, details of other users' processes and
 socket owners are left out and the capture says so. Hostprint never tries to
-elevate itself.
+elevate itself. On macOS the same applies to `lsof` (only your own sockets get
+an owning process) and `launchctl list` (only your user's launchd jobs).
+
+**System tools are run by absolute path.** On macOS, where most data comes
+from tools rather than `/proc`, Hostprint runs `/bin/ps`, `/usr/bin/vm_stat`,
+`/usr/bin/top`, `/usr/sbin/sysctl`, `/sbin/mount`, `/usr/sbin/netstat`,
+`/usr/sbin/lsof`, `/sbin/route` and `/bin/launchctl` directly, never through
+`PATH`, each with a timeout and a pinned locale. Their output is parsed, not
+evaluated, and command lines from `ps` are redacted like any others.
 
 ## Limits to be aware of
 

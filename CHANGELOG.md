@@ -59,7 +59,6 @@
   marked in every output); changes turned off are counted in a note.
 - `hostprint policy show` (effective policy, warnings for entries matching no
   rule) and `hostprint policy rules` (every rule id).
-
 - Capture over SSH: `hostprint capture ssh://[user@]host[:port]`, and
   `ssh://` on either side of `diff` (`hostprint diff ssh://web-1
   ssh://web-2`). Uses the system ssh client, streams the binary to a private
@@ -68,6 +67,15 @@
   `--remote-binary` sends a different build. Snapshots record
   `capture.remote`.
 - `HOSTPRINT_*` variables are INFO in diffs.
+- macOS support (Apple Silicon and Intel): native collectors for the system
+  (`sysctl`), resources (`vm_stat`, swap usage, `top` CPU sampling, mounted
+  volumes), processes (`ps`), network (`netstat`, `lsof` owners, `route`,
+  `getifaddrs`) and services (launchd jobs from `launchctl list`). Docker,
+  Git, runtimes, environment, files and log files work as on Linux. `doctor`
+  checks the macOS tools. Snapshots record `host.kernelName`. Release builds
+  include macOS binaries, and CI runs the test suite and a smoke test on
+  macOS.
+- `scripts/dev.* check-macos` type-checks the macOS build without a Mac.
 
 ### Fixed
 
@@ -82,3 +90,6 @@
 - `process.uninterruptible` and `process.zombies` need a real jump (×3 and
   ×2) and count only processes older than a minute, so ordinary I/O waits on
   a busy machine no longer register.
+- macOS session variables (`XPC_SERVICE_NAME`, `XPC_FLAGS`,
+  `__CFBundleIdentifier`, `SECURITYSESSIONID`, `LaunchInstanceID`) are INFO in
+  diffs, and launchd jobs starting and stopping on demand are INFO.

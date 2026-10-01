@@ -86,11 +86,11 @@ everything else describes the remote machine as it saw itself.
 
 | Section       | Collector     | Contents |
 | ------------- | ------------- | -------- |
-| `host`        | `system`      | `hostname`, `os` (`id`, `name`, `versionId`, `prettyName`), `kernel`, `architecture`, `bootTime`, `uptimeSeconds`, `timezone`, `hardware`, `container` |
+| `host`        | `system`      | `hostname`, `os` (`id`, `name`, `versionId`, `prettyName`), `kernel` (release), `kernelName` (`Linux` or `Darwin`; absent in older snapshots, which are Linux), `architecture`, `bootTime`, `uptimeSeconds`, `timezone`, `hardware`, `container` |
 | `resources`   | `resources`   | `cpu` (`model`, `logicalCores`, `physicalCores`, sampled `usagePercent` / `iowaitPercent` / `stealPercent`), `load` (`one`, `five`, `fifteen`), `memory` and `swap` (bytes), `pressure` (PSI avg60 percentages), `disks` |
 | `processes`   | `processes`   | `list` of processes (`pid`, `ppid`, `name`, `exe`, redacted `cmdline`, `user`, `uid`, `state`, `cpuPercent`, `memoryBytes` (RSS), `threads`, `startedAt`) and a `kernelThreads` count. Hostprint's own process tree is excluded. |
 | `network`     | `network`     | `interfaces` (`name`, `state`, `mac`, `mtu`, CIDR `addresses`, `virtual`), `listening` sockets (`protocol`, `address`, `port`, `pid`, `process`), `tcpStates` counts, `defaultGateways`, `dns` (`nameservers`, `search`, `upstreamNameservers`), `ephemeralPorts` |
-| `services`    | `services`    | systemd service units: `name`, `description`, `loadState`, `activeState`, `subState`, `serviceType`, `restarts` (`NRestarts`), `result`, `activeSince`, `mainPid` |
+| `services`    | `services`    | systemd service units, or launchd jobs on macOS (`serviceType` `launchd`, `result` such as `exit 78` or `signal 9`): `name`, `description`, `loadState`, `activeState`, `subState`, `serviceType`, `restarts` (`NRestarts`), `result`, `activeSince`, `mainPid` |
 | `docker`      | `docker`      | `engineVersion` and `containers` (`id`, `name`, `image`, `imageId`, `state`, `status`, `health`, `restartCount`, `exitCode`, `oomKilled`, `startedAt`, `ports`, `memoryBytes`, `memoryLimitBytes`, `composeProject`, `composeService`) |
 | `git`         | `git`         | `root`, `branch`, `commit`, `commitSubject`, `commitTime`, `describe`, credential-free `remote`, `dirty`, `staged`, `modified`, `untracked`, `changedPaths` (at most 100; never contents) |
 | `runtimes`    | `runtimes`    | `name`, `version`, `path` for runtimes found on `PATH` |

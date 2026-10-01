@@ -76,6 +76,9 @@ Some values change on every capture. They are never compared directly:
   ...) are INFO.
 - systemd `oneshot` units changing between inactive and active are INFO, and
   inactive units vanishing (systemd unloads them) are INFO.
+- macOS launchd jobs are treated like oneshots: most start on demand and exit
+  when idle, so starting and stopping are INFO. A job whose last exit status
+  turns non-zero is still `service.failed` (HIGH).
 - Container port bindings are compared only when the container is running in
   both snapshots.
 - A section that could not be collected in one snapshot is not compared at
@@ -197,13 +200,13 @@ for ports in the ephemeral range.
 | ---------------------- | ------ | ---- |
 | `service.failed`       | HIGH   | Unit entered the failed state (or appeared already failed) |
 | `service.restart_loop` | HIGH   | Unit is waiting to be restarted (`activating (auto-restart)`) |
-| `service.stopped`      | HIGH   | Unit went from active to inactive (INFO for oneshot) |
+| `service.stopped`      | HIGH   | Unit went from active to inactive (INFO for oneshot and launchd) |
 | `service.restarts`     | HIGH   | systemd restarted it 5 or more times since the baseline |
 |                        | MEDIUM | 1 to 4 times |
 | `service.restarted`    | LOW    | Still running but started again without an automatic restart |
 | `service.recovered`    | LOW    | Failed → active |
-| `service.started`      | LOW    | Became active (INFO for oneshot) |
-| `service.state`        | LOW    | Any other state change (INFO for oneshot) |
+| `service.started`      | LOW    | Became active (INFO for oneshot and launchd) |
+| `service.state`        | LOW    | Any other state change (INFO for oneshot and launchd) |
 | `service.removed`      | MEDIUM | An active unit is no longer loaded (INFO if it was inactive) |
 | `service.added`        | LOW    | New active unit (INFO if inactive) |
 

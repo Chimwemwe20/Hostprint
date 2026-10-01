@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 /// How long a filesystem may take to answer `statvfs` before it is reported
 /// as unresponsive. A hung NFS mount must not hang the capture.
-const STATVFS_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const STATVFS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Filesystems that never hold user data, or that churn without meaning
 /// (snap squashfs images are always 100% full).
@@ -71,6 +71,10 @@ impl Collector for ResourcesCollector {
     }
 
     fn collect(&self, ctx: &CaptureContext) -> Result<Collected, CollectError> {
+        #[cfg(target_os = "macos")]
+        if ctx.is_live() {
+            return crate::macos::live::resources(ctx);
+        }
         ctx.require_linux()?;
         let stat_path = ctx.path("/proc/stat");
         let first = std::fs::read_to_string(&stat_path).ok().and_then(|s| parse_cpu_times(&s));
@@ -310,8 +314,13 @@ fn collect_disks(ctx: &CaptureContext) -> Vec<Disk> {
         return Vec::new();
     };
     let mounts = relevant_mounts(parse_mounts(&contents), |mp| ctx.path(mp).is_dir());
+    stat_disks(ctx, mounts)
+}
 
-    // Probe every filesystem concurrently, under one shared deadline.
+/// Sizes and inode counts of `mounts`. Every filesystem is probed
+/// concurrently under one shared deadline, so a hung mount is reported as
+/// unresponsive instead of stalling the capture.
+pub(crate) fn stat_disks(ctx: &CaptureContext, mounts: Vec<Mount>) -> Vec<Disk> {
     let pending: Vec<(Mount, mpsc::Receiver<Option<FsStats>>)> = mounts
         .into_iter()
         .map(|m| {

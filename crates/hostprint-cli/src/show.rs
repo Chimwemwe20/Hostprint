@@ -78,7 +78,7 @@ pub fn overview(s: &Snapshot, style: &Style) -> Vec<String> {
     if let Some(h) = &s.host {
         let mut parts = vec![h.hostname.clone()];
         parts.extend(h.os.as_ref().map(|o| o.display()));
-        parts.extend(h.kernel.as_ref().map(|k| format!("Linux {k}")));
+        parts.extend(h.kernel_display());
         parts.push(h.architecture.clone());
         out.push(row(style, "host", parts.join(" · ")));
         if let Some(up) = h.uptime_seconds {

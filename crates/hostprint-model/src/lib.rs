@@ -66,6 +66,14 @@ impl Snapshot {
     }
 }
 
+impl Host {
+    /// "Linux 6.8.0-45-generic", "Darwin 23.5.0".
+    pub fn kernel_display(&self) -> Option<String> {
+        let name = self.kernel_name.as_deref().unwrap_or("Linux");
+        self.kernel.as_ref().map(|k| format!("{name} {k}"))
+    }
+}
+
 /// How the snapshot was taken.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -135,6 +143,9 @@ pub struct Host {
     pub os: Option<OsRelease>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel: Option<String>,
+    /// "Linux" or "Darwin"; snapshots without it are Linux.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_name: Option<String>,
     pub architecture: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boot_time: Option<DateTime<Utc>>,

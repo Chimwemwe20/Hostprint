@@ -76,10 +76,19 @@ point-in-time evidence and makes that evidence comparable.
 A capture typically takes under a second (collectors run in parallel), and a
 snapshot is tens to hundreds of kilobytes.
 
+On macOS the same sections come from macOS's own sources: `sysctl`,
+`vm_stat` and `top` for resources, `ps` for processes, `netstat`, `lsof`,
+`route` and `getifaddrs` for the network, and `launchctl` for services
+(launchd jobs). Linux-only details are left out: pressure stall, the systemd
+journal, `/proc`-level thread counts.
+
 ## Install
 
-Hostprint supports Linux. It is tested on x86_64; ARM64 builds from the same
-code but has not been tested yet.
+Hostprint runs on Linux and macOS. Linux is tested on x86_64 (ARM64 builds
+from the same code but is not tested yet); macOS is tested in CI on Apple
+Silicon, and Intel Macs are type-checked there too. On macOS, install with
+`cargo install --path crates/hostprint-cli`; the Docker build below produces
+Linux binaries only.
 
 **With Docker, no Rust needed.** This builds a static binary into `dist/`:
 
@@ -335,8 +344,8 @@ Done:
   Markdown reports, baselines and `check`, configurable collectors, export.
 - **v0.3:** terminal UI (`tui`), live dashboard (`watch`), standalone HTML
   reports, diff policies, capture over SSH.
-
-Next: macOS support.
+- **macOS:** native collectors for system, resources, processes, network and
+  launchd, tested in CI on macOS runners.
 
 ## Developing
 
@@ -345,6 +354,7 @@ No local Rust toolchain is needed. `scripts/dev.ps1` (Windows) and
 
 ```sh
 ./scripts/dev.sh check                  # fmt, clippy and tests, as CI runs them
+./scripts/dev.sh check-macos            # type-check the macOS build (its tests run in CI)
 ./scripts/dev.sh run capture --name x   # try the CLI
 ./scripts/dev.sh build                  # static binary in dist/
 ./scripts/dev.sh demo                   # the README demo, against your Docker
