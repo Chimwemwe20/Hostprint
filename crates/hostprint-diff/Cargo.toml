@@ -1,0 +1,15 @@
+[package]
+name = "hostprint-diff"
+description = "Snapshot comparison engine for Hostprint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+chrono.workspace = true
+hostprint-model.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "hostprint-core"
+description = "Capture engine and configuration for Hostprint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+chrono.workspace = true
+getrandom.workspace = true
+hostprint-collectors.workspace = true
+hostprint-model.workspace = true
+serde.workspace = true
+toml.workspace = true

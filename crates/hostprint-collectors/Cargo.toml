@@ -1,0 +1,16 @@
+[package]
+name = "hostprint-collectors"
+description = "System state collectors for Hostprint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+chrono.workspace = true
+hostprint-model.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

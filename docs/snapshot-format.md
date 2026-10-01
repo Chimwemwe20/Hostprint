@@ -1,0 +1,107 @@
+# Snapshot format
+
+A snapshot is one UTF-8 JSON document. Stored snapshots live in
+`~/.hostprint/snapshots/<name>.hp` (or under `$HOSTPRINT_HOME`), pretty-printed
+so they diff and review well in plain tools. `hostprint show <name> --json`
+prints the same document; `hostprint capture --json` prints it on stdout.
+
+Any `.hp` or `.json` snapshot file can be passed wherever a snapshot name is
+accepted, so snapshots can be copied between machines and compared:
+
+```sh
+hostprint diff healthy ./incident-from-web-2.hp
+```
+
+## Versioning
+
+Every snapshot has a top-level `schemaVersion` (currently `1`).
+
+- Within a schema version, changes are additive only: new optional fields,
+  new sections. Older Hostprint builds ignore fields they do not know.
+- Anything else (renaming, removing or changing the meaning of a field) bumps
+  `schemaVersion`.
+- Hostprint reads every schema version up to its own, and refuses newer ones
+  with a clear error rather than misreading them.
+
+Keys are camelCase. Optional values are omitted rather than `null`.
+
+## Top level
+
+| Field           | Type   | Description |
+| --------------- | ------ | ----------- |
+| `schemaVersion` | number | Format version |
+| `id`            | string | `snap_` + a ULID; sorts by capture time |
+| `name`          | string | Snapshot name |
+| `capturedAt`    | string | RFC 3339 UTC timestamp |
+| `capture`       | object | How the snapshot was taken (below) |
+| `host`, `resources`, `processes`, `network`, `services`, `docker`, `git`, `runtimes`, `environment`, `files` | object / array | One section per collector |
+
+A missing section means it was **not collected**, which is different from an
+empty one. `capture.collectors` says why.
+
+## `capture`
+
+```json
+{
+  "hostprintVersion": "0.1.0",
+  "durationMs": 312,
+  "user": "deploy",
+  "uid": 1000,
+  "elevated": false,
+  "workingDir": "/srv/app",
+  "collectors": [
+    { "name": "processes", "status": "partial", "durationMs": 268, "summary": "412 processes",
+      "notes": ["executable paths unavailable for 37 processes owned by other users (run as root for full details)"] },
+    { "name": "docker", "status": "failed", "durationMs": 1, "message": "Docker daemon not reachable at /var/run/docker.sock" },
+    { "name": "git", "status": "skipped", "durationMs": 3, "message": "/root is not inside a Git repository" }
+  ]
+}
+```
+
+`status` is one of:
+
+| Status    | Section present | Meaning |
+| --------- | --------------- | ------- |
+| `ok`      | yes | Collected completely |
+| `partial` | yes | Collected with caveats in `notes`, usually missing permissions |
+| `skipped` | no  | Not applicable here (tool not installed, not a repository, nothing configured) |
+| `failed`  | no  | Applicable but could not be collected; see `message` |
+
+## Sections
+
+| Section       | Collector     | Contents |
+| ------------- | ------------- | -------- |
+| `host`        | `system`      | `hostname`, `os` (`id`, `name`, `versionId`, `prettyName`), `kernel`, `architecture`, `bootTime`, `uptimeSeconds`, `timezone`, `hardware`, `container` |
+| `resources`   | `resources`   | `cpu` (`model`, `logicalCores`, `physicalCores`, sampled `usagePercent` / `iowaitPercent` / `stealPercent`), `load` (`one`, `five`, `fifteen`), `memory` and `swap` (bytes), `pressure` (PSI avg60 percentages), `disks` |
+| `processes`   | `processes`   | `list` of processes (`pid`, `ppid`, `name`, `exe`, redacted `cmdline`, `user`, `uid`, `state`, `cpuPercent`, `memoryBytes` (RSS), `threads`, `startedAt`) and a `kernelThreads` count. Hostprint's own process tree is excluded. |
+| `network`     | `network`     | `interfaces` (`name`, `state`, `mac`, `mtu`, CIDR `addresses`, `virtual`), `listening` sockets (`protocol`, `address`, `port`, `pid`, `process`), `tcpStates` counts, `defaultGateways`, `dns` (`nameservers`, `search`, `upstreamNameservers`), `ephemeralPorts` |
+| `services`    | `services`    | systemd service units: `name`, `description`, `loadState`, `activeState`, `subState`, `serviceType`, `restarts` (`NRestarts`), `result`, `activeSince`, `mainPid` |
+| `docker`      | `docker`      | `engineVersion` and `containers` (`id`, `name`, `image`, `imageId`, `state`, `status`, `health`, `restartCount`, `exitCode`, `oomKilled`, `startedAt`, `ports`, `memoryBytes`, `memoryLimitBytes`, `composeProject`, `composeService`) |
+| `git`         | `git`         | `root`, `branch`, `commit`, `commitSubject`, `commitTime`, `describe`, credential-free `remote`, `dirty`, `staged`, `modified`, `untracked`, `changedPaths` (at most 100; never contents) |
+| `runtimes`    | `runtimes`    | `name`, `version`, `path` for runtimes found on `PATH` |
+| `environment` | `environment` | `fingerprintKeyId` and `variables` (`name`, `source`, `value`, `redacted`, `fingerprint`) |
+| `files`       | `files`       | `path`, `exists`, `size`, `modified`, `sha256`, `mode`, `uid`, `gid`, `error` |
+
+Byte quantities are plain integers in bytes. Disk `usedBytes` excludes
+reserved blocks the same way `df` does.
+
+## Redacted values
+
+```json
+{ "name": "DATABASE_URL", "source": "process",
+  "value": "postgres://app:[REDACTED]@db.internal:5432/app",
+  "redacted": true, "fingerprint": "5c0f9e1d2a7b3c44" }
+```
+
+- `value` is `[REDACTED]`, or the original with only the credential removed
+  (URL passwords, secret query parameters).
+- `fingerprint` is the first 16 hex characters of HMAC-SHA256 of the original
+  value, keyed with the installation's `fingerprint.key`. Equal fingerprints
+  mean equal values; the fingerprint cannot be reversed or brute-forced
+  without that key.
+- `fingerprintKeyId` identifies the key, so the diff only compares
+  fingerprints made with the same one.
+- Values longer than 1 KiB that are not secret are stored as
+  `"[<n> bytes]"` plus a fingerprint.
+- `source` is `process` for Hostprint's own environment, or the path of the
+  dotenv file the variable came from.

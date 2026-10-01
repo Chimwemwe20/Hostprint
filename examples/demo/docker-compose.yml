@@ -1,0 +1,28 @@
+# The healthy stack for the Hostprint demo: an API, Postgres and Redis.
+name: hostprint-demo
+
+services:
+  api:
+    image: python:3.13-alpine
+    command: ["python", "-m", "http.server", "8080"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080')"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: demo
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 15

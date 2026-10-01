@@ -1,0 +1,16 @@
+# Overlay that breaks the demo stack:
+#   - redis crashes on start and is restarted forever
+#   - a new "hog" container holds ~1.2 GiB of memory
+#   - the api gets a new environment variable
+services:
+  redis:
+    command: ["sh", "-c", "echo 'FATAL: cannot open append-only file' >&2; sleep 1; exit 1"]
+    restart: always
+
+  api:
+    environment:
+      FEATURE_NEW_CACHE: "on"
+
+  hog:
+    image: python:3.13-alpine
+    command: ["python", "-c", "import time; held = b'x' * (1200 * 1024 * 1024); time.sleep(3600)"]

@@ -1,0 +1,67 @@
+# Security
+
+## Reporting a vulnerability
+
+Please report vulnerabilities privately through GitHub's
+[private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
+on this repository, not in a public issue. Include the Hostprint version,
+your platform, and steps to reproduce. We aim to acknowledge reports within a
+few days.
+
+Secret redaction misses (a credential that ends up stored in a snapshot) are
+security bugs and are welcome as reports.
+
+## What Hostprint does and does not do
+
+**It stays local.** Hostprint makes no network connections. The only socket it
+opens is the local Docker Engine socket, when one exists. There is no
+telemetry, no update check, and no upload; snapshots leave the machine only if
+you copy them.
+
+**It reads metadata, not content.** File fingerprints are hashes, Git data is
+commit and file *names*, and logs are not collected in this version.
+
+**It redacts before storing.** Redaction runs inside each collector, so secret
+values never reach a snapshot in memory or on disk. A value is redacted when:
+
+- its name contains `PASSWORD`, `PASSWD`, `PASS`, `SECRET`, `TOKEN`, `KEY`,
+  `AUTH`, `COOKIE`, `PRIVATE`, `CREDENTIAL`, `SESSION`, `SIGNATURE`, `SALT` or
+  `DSN` (case-insensitive, plus anything in `[redact] patterns`);
+- it is a URL with a password, or has secret-named query parameters (only the
+  secret part is removed);
+- it looks like a credential: a known token prefix (`ghp_`, `sk_live_`,
+  `xoxb-`, `AKIA`, `glpat-`, ...), a JWT, a PEM block, or a long string mixing
+  upper case, lower case and digits.
+
+This applies to environment variables, dotenv files, process command lines
+and the Git remote URL.
+
+**Fingerprints are keyed.** Redacted values keep a truncated
+HMAC-SHA256 fingerprint so a diff can report "this secret changed". The key
+is 32 random bytes in `~/.hostprint/fingerprint.key`, created on first use.
+Without it, a fingerprint cannot be checked against guesses, so a shared
+snapshot does not expose low-entropy secrets to brute force.
+
+**Storage is private.** `~/.hostprint` is created `0700`; snapshots and the
+key are written `0600`, atomically.
+
+**It does not need root.** Without root, details of other users' processes and
+socket owners are left out and the capture says so. Hostprint never tries to
+elevate itself.
+
+## Limits to be aware of
+
+- Redaction is heuristic. A secret stored under an innocuous name with an
+  innocuous shape (`MY_SETTING=hunter2`) is not detected. Add such names (or
+  a fragment of them) to `[redact] patterns` so they are stored only as
+  fingerprints.
+- Snapshots still describe your infrastructure: hostnames, IP addresses,
+  process names and command lines, container names, file paths. Treat them as
+  internal documents and review them before sharing outside your team.
+- The runtime collector runs `--version` (or equivalent) for tools found on
+  `PATH`, such as `node`, `python3` and `java`, with a timeout. Run Hostprint
+  with a `PATH` you trust.
+- Reading the Docker socket requires membership of the `docker` group or
+  root, which is root-equivalent on most systems. Hostprint only issues
+  read-only `GET` requests.
+- Setting `redact_secrets = false` in `config.toml` stores values verbatim.
