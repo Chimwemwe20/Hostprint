@@ -95,8 +95,9 @@ sudo install dist/hostprint /usr/local/bin/
 cargo install --path crates/hostprint-cli
 ```
 
-The binary is about 3.5 MB and, built for musl as above, fully static. There
-are no published releases yet; `.github/workflows/release.yml` is set up to
+The binary is about 4 MB and, built for musl as above, fully static. Building
+with `--no-default-features` leaves out the terminal UI. There are no
+published releases yet; `.github/workflows/release.yml` is set up to
 attach static x86_64 and ARM64 binaries to a GitHub Release when a `v*` tag is
 pushed.
 
@@ -110,6 +111,9 @@ hostprint capture  [--name NAME] [--logs-since 30m] [--repo DIR] [--env-file FIL
 hostprint list
 hostprint show     NAME [--section processes|ports|interfaces|disks|services|containers|env|runtimes|files|logs|collectors] [--json]
 hostprint diff     FROM [TO] [--format text|json|markdown] [--all] [--min LEVEL] [--fail-on LEVEL]
+hostprint tui
+hostprint watch    [--interval 10s] [--baseline NAME]
+hostprint report   SNAPSHOT [TO] [--format html|markdown] [--output FILE]
 hostprint bundle   [SNAPSHOT] [--against SNAPSHOT] [--output FILE]
 hostprint baseline create NAME [--from SNAPSHOT] | list | show NAME | delete NAME
 hostprint check    BASELINE [--format ...] [--fail-on LEVEL]
@@ -136,6 +140,61 @@ hostprint doctor
 Exit status: `0` success, `1` threshold met (`--fail-on`, or `check`'s default
 of MEDIUM), `2` error.
 
+### Terminal UI
+
+`hostprint tui` lets you browse snapshots and baselines; open one to page
+through its processes, ports, services, containers, disks, environment and
+logs, with `/` to filter. Mark one with Space and press `c` to compare (or
+`n` to compare it with the system as it is now). The diff view filters by
+level (`m`) and category (`c`), Enter shows a change's rule and full values,
+and `b` writes an incident bundle.
+
+`hostprint watch` is a live dashboard. It captures every 10 seconds (or
+`--interval`). Here it is rendered from the test fixtures, where Redis starts
+crash-looping and nginx fails between two captures (blank rows trimmed):
+
+```text
+ HOSTPRINT  WATCH web-1 · every 10s · capture #2 · paused
+┌ CPU ──────────────────┐┌ Memory ───────────────┐┌ Disk ─────────────────┐┌ Load ─────────────────┐
+│█████████ 38%          ││████38% of 8.0 GiB     ││█████████/ 54%         ││██  0.42 (0.1/core)    │
+└───────────────────────┘└───────────────────────┘└───────────────────────┘└───────────────────────┘
+┌ Services · 0 active · 1 failed ────────────────┐┌ Containers · 1/2 running ──────────────────────┐
+│nginx                  failed (failed)  ↻3      ││redis                  restarting unhealthy  ↻17│
+│                                                ││api                    running healthy          │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+┌ Changed since first capture at 14:13:20 · 4 high · 1 medium · 0 low ─────────────────────────────┐
+│HIGH   SERVICES      nginx.service               state              active (running) → failed (fai│
+│HIGH   CONTAINERS    redis                       health             healthy → unhealthy           │
+│HIGH   CONTAINERS    redis                       restart count      0 → 17                        │
+│HIGH   CONTAINERS    redis                       state              running → restarting          │
+│MEDIUM SERVICES      nginx.service               automatic restarts 0 → 3                         │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Recent state changes ────────────────────────────────────────────────────────────────────────────┐
+│14:13:30 HIGH   nginx.service state active (running) → failed (failed)                            │
+│14:13:30 HIGH   redis health healthy → unhealthy                                                  │
+│14:13:30 HIGH   redis restart count 0 → 17                                                        │
+│14:13:30 HIGH   redis state running → restarting                                                  │
+│14:13:30 MEDIUM nginx.service automatic restarts 0 → 3                                            │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ space capture now  p resume  r reset reference  s save snapshot  ? help  q quit
+```
+
+Problems are listed first. The timeline shows what changed between consecutive
+captures, and `--baseline production` measures drift from a baseline instead
+of from the first capture. Both views run in any terminal, including over SSH.
+
+### HTML reports
+
+```sh
+hostprint report healthy broken     # writes healthy-to-broken.html
+hostprint report broken             # one snapshot
+```
+
+The report is a single file with inline styles, no scripts and no external
+resources, so it opens the same from an email attachment or a ticket. It
+follows the reader's light or dark preference. Bundles include it as
+`report.html`.
+
 ### Baselines and checks
 
 Record a known-good state once, then compare against it whenever you need to:
@@ -152,7 +211,7 @@ hostprint bundle broken --against healthy
 ```
 
 writes `broken-20261001-165001.tar.gz` with `snapshot.json`, `baseline.json`,
-`diff.json`, a Markdown `report.md`, the collected `logs/`, a `manifest.json`,
+`diff.json`, `report.md` and `report.html`, the collected `logs/`, a `manifest.json`,
 and a `checksums.sha256` you can verify with `sha256sum -c`. It is ready to
 attach to a GitHub issue or support ticket. With no snapshot named,
 `hostprint bundle` captures the system first, which makes it a one-command
@@ -242,9 +301,10 @@ Done:
 - **v0.1:** capture, list, show, diff, doctor, JSON output, secret redaction.
 - **v0.2:** incident bundles, journal / Docker / file log collection,
   Markdown reports, baselines and `check`, configurable collectors, export.
+- **v0.3 (part):** terminal UI (`tui`), live dashboard (`watch`), standalone
+  HTML reports.
 
-Next, **v0.3:** watch mode and a terminal UI, custom diff policies, macOS
-support, capture over SSH.
+Next: custom diff policies, macOS support, capture over SSH.
 
 ## Developing
 

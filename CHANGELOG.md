@@ -38,4 +38,26 @@
 - Docker-based development without a local Rust toolchain:
   `scripts/dev.ps1` / `scripts/dev.sh` (`check`, `test`, `build`, `run`,
   `demo`, `shell`) and a root `Dockerfile` that outputs the static binary.
-- Reproducible Docker demo in `examples/demo`, now with logs and a bundle.
+- Reproducible Docker demo in `examples/demo`, now with logs and a bundle
+  (`OUT=dir` keeps the bundle).
+- `hostprint tui`: browse snapshots and baselines, inspect a snapshot's
+  processes, ports, services, containers, disks, environment and logs with a
+  filter, compare two snapshots (or one with the live system), filter the
+  diff by level and category, inspect a change's rule and values, and write a
+  bundle.
+- `hostprint watch`: a live dashboard that captures on an interval and shows
+  resource gauges, service and container health (problems first), drift from
+  the first capture or a `--baseline`, and a timeline of state changes.
+- `hostprint report`: a standalone HTML report (inline CSS, no scripts, light
+  and dark) of a snapshot or of a comparison; `--format markdown` too.
+  Bundles now include `report.html`.
+- The terminal UI is behind the default `tui` cargo feature.
+
+### Changed
+
+- Terminal and shell variables (`TERM`, `TERM_PROGRAM`, `COLORTERM`, `SHELL`)
+  are INFO in diffs: they describe where Hostprint was started from, not the
+  system.
+- `process.uninterruptible` and `process.zombies` need a real jump (×3 and
+  ×2) and count only processes older than a minute, so ordinary I/O waits on
+  a busy machine no longer register.

@@ -4,7 +4,8 @@
 #
 # Requires Linux, Docker with Compose v2, git, and `hostprint` on PATH
 # (or HOSTPRINT=/path/to/hostprint). Everything is removed afterwards unless
-# KEEP=1 is set. Snapshots go to a temporary HOSTPRINT_HOME, not ~/.hostprint.
+# KEEP=1 is set; OUT=dir keeps just the incident bundle. Snapshots go to a
+# temporary HOSTPRINT_HOME, not ~/.hostprint.
 set -eu
 
 cd "$(dirname "$0")"
@@ -61,3 +62,7 @@ echo
 echo
 echo "==> Bundling the evidence"
 "$HOSTPRINT" bundle broken --against healthy --output "$WORK/incident.tar.gz" 2>/dev/null
+if [ -n "${OUT:-}" ]; then
+    cp "$WORK/incident.tar.gz" "$OUT/"
+    echo "    copied to $OUT/incident.tar.gz"
+fi

@@ -3,10 +3,13 @@ mod bundle;
 mod capture;
 mod diff;
 mod doctor;
+mod html;
 mod list;
 mod report;
 mod show;
 mod style;
+#[cfg(feature = "tui")]
+mod tui;
 
 use anyhow::{Context as _, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -58,6 +61,8 @@ enum Command {
     Diff(DiffArgs),
     /// Package a snapshot (and optionally its diff) for an issue or ticket
     Bundle(BundleArgs),
+    /// Write a standalone HTML (or Markdown) report of a snapshot or a comparison
+    Report(ReportArgs),
     /// Manage known-good baselines for `hostprint check`
     #[command(subcommand)]
     Baseline(BaselineCommand),
@@ -72,6 +77,25 @@ enum Command {
     },
     /// Check what Hostprint can observe on this machine
     Doctor,
+    /// Browse, compare and bundle snapshots in an interactive terminal UI
+    #[cfg(feature = "tui")]
+    Tui,
+    /// Live dashboard: capture on an interval and show what changes
+    #[cfg(feature = "tui")]
+    Watch(WatchArgs),
+}
+
+#[cfg(feature = "tui")]
+#[derive(Args)]
+pub struct WatchArgs {
+    /// Time between captures, e.g. 10s or 1m
+    #[arg(long, default_value = "10s", value_name = "DURATION")]
+    pub interval: String,
+    /// Compare with this baseline instead of the first capture
+    #[arg(long, value_name = "NAME")]
+    pub baseline: Option<String>,
+    #[command(flatten)]
+    pub options: CaptureOptions,
 }
 
 /// Options shared by every command that captures the live system.
@@ -199,6 +223,32 @@ pub struct BundleArgs {
     pub output: Option<PathBuf>,
     #[command(flatten)]
     pub options: CaptureOptions,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ReportFormat {
+    Html,
+    Markdown,
+}
+
+#[derive(Args)]
+pub struct ReportArgs {
+    /// Snapshot to report on (name or file); with TO, the "from" side
+    pub snapshot: String,
+    /// Report the changes from SNAPSHOT to this snapshot (name or file)
+    pub to: Option<String>,
+    /// Output format
+    #[arg(long, value_enum, default_value = "html")]
+    pub format: ReportFormat,
+    /// Shorthand for --format html
+    #[arg(long)]
+    pub html: bool,
+    /// Output file [default: <name>.html in the current directory; "-" for stdout]
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+    /// Replace an existing file
+    #[arg(short, long)]
+    pub force: bool,
 }
 
 #[derive(Subcommand)]
@@ -367,6 +417,7 @@ fn run(cli: Cli, style: Style, err_style: Style) -> Result<ExitCode> {
         Command::Show(args) => show::run(&app, args),
         Command::Diff(args) => diff::run(&app, args),
         Command::Bundle(args) => bundle::run(&app, args),
+        Command::Report(args) => report::run(&app, args),
         Command::Baseline(cmd) => baseline::run(&app, cmd),
         Command::Check(args) => baseline::check(&app, args),
         Command::Export(args) => {
@@ -389,5 +440,9 @@ fn run(cli: Cli, style: Style, err_style: Style) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Doctor => doctor::run(&app),
+        #[cfg(feature = "tui")]
+        Command::Tui => tui::browse(&app),
+        #[cfg(feature = "tui")]
+        Command::Watch(args) => tui::watch(&app, args),
     }
 }

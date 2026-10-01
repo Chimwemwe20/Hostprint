@@ -35,6 +35,12 @@ const VOLATILE: &[&str] = &[
     "STY",
     "WINDOW",
     "TERM_PROGRAM_VERSION",
+    // Which terminal and shell Hostprint was started from (found when a
+    // capture made inside tmux was compared with one made outside it).
+    "TERM",
+    "TERM_PROGRAM",
+    "COLORTERM",
+    "SHELL",
     "MAIL",
     "SUDO_COMMAND",
     "SUDO_UID",
@@ -212,6 +218,17 @@ mod tests {
         assert_eq!(c[1].after.as_deref(), Some("fp 22222222"));
         assert!(!c[1].after.as_deref().unwrap().contains("REDACTED"));
         assert_eq!(c[3].delta.as_deref(), Some("+/usr/local/go/bin"));
+    }
+
+    #[test]
+    fn terminal_variables_are_info() {
+        let (c, _) = changes(|b| {
+            let v = vars(b);
+            v.push(env("TERM", "tmux-256color"));
+            v.push(env("TERM_PROGRAM", "tmux"));
+            v.push(env("SHELL", "/bin/bash"));
+        });
+        assert!(c.iter().all(|c| c.significance == Info), "{c:#?}");
     }
 
     #[test]

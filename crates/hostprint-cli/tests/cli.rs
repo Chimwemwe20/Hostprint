@@ -235,7 +235,9 @@ fn bundles_contain_snapshot_diff_report_and_checksums() {
 
     let files = read_bundle(&out_path);
     let names: Vec<&str> = files.iter().map(|(n, _)| n.split_once('/').unwrap().1).collect();
-    for expected in ["snapshot.json", "baseline.json", "diff.json", "report.md", "manifest.json", "checksums.sha256"] {
+    for expected in
+        ["snapshot.json", "baseline.json", "diff.json", "report.md", "report.html", "manifest.json", "checksums.sha256"]
+    {
         assert!(names.contains(&expected), "{expected} missing from {names:?}");
     }
     let get = |name: &str| &files.iter().find(|(n, _)| n.ends_with(&format!("/{name}"))).unwrap().1;
@@ -297,5 +299,48 @@ fn baselines_check_and_export() {
 
     assert_ok(&hostprint(&home, &["baseline", "delete", "production"]));
     assert_eq!(hostprint(&home, &["check", "production"]).status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn html_and_markdown_reports() {
+    let home = temp_home("report");
+    assert_ok(&hostprint(&home, &["capture", "--name", "a", "--quiet"]));
+    assert_ok(&hostprint(&home, &["capture", "--name", "b", "--quiet"]));
+
+    let html_path = home.join("r.html");
+    let out = hostprint(&home, &["report", "a", "b", "-o", html_path.to_str().unwrap()]);
+    assert_ok(&out);
+    let html = std::fs::read_to_string(&html_path).unwrap();
+    assert!(html.starts_with("<!doctype html>"));
+    assert!(html.contains("<h1>a → b</h1>"), "{html}");
+    assert!(html.contains("What changed") && html.contains("Collection"));
+    assert!(!html.contains("<script") && !html.contains("http://") && !html.contains("https://"), "self-contained");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&html_path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    // Refuses to overwrite without --force.
+    assert_eq!(hostprint(&home, &["report", "a", "b", "-o", html_path.to_str().unwrap()]).status.code(), Some(2));
+    assert_ok(&hostprint(&home, &["report", "a", "b", "-o", html_path.to_str().unwrap(), "--force"]));
+
+    let single = hostprint(&home, &["report", "a", "-o", "-"]);
+    assert_ok(&single);
+    assert!(stdout(&single).contains("<title>Hostprint: a</title>"));
+    let md = hostprint(&home, &["report", "a", "b", "--format", "markdown", "-o", "-"]);
+    assert!(stdout(&md).starts_with("# Hostprint snapshot: `b`"), "{}", stdout(&md));
+    assert!(stdout(&md).contains("# Hostprint diff: `a` → `b`"));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn interactive_commands_need_a_terminal() {
+    let home = temp_home("tty");
+    for args in [&["tui"][..], &["watch"][..]] {
+        let out = hostprint(&home, args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("needs an interactive terminal"));
+    }
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -107,7 +107,9 @@ Disk usage is `used / (used + available)`, as `df` reports it.
 
 ### Processes
 
-Processes are grouped by name.
+Processes are grouped by name. The D-state and zombie counts include only
+processes older than a minute, and leave out interactive tools and ignored
+processes, because a few short I/O waits are normal on a busy machine.
 
 | Rule                      | Level  | When |
 | ------------------------- | ------ | ---- |
@@ -118,8 +120,8 @@ Processes are grouped by name.
 |                           | LOW    | Grew by at least 128 MiB and 50% |
 | `process.restarted`       | LOW    | Single-instance process has a new start time |
 | `process.exe`             | LOW    | Single-instance process runs a different executable |
-| `process.uninterruptible` | MEDIUM | At least 5 processes in D state, from fewer than 5 |
-| `process.zombies`         | LOW    | At least 5 zombies, and more than before |
+| `process.uninterruptible` | MEDIUM | At least 5 processes stuck in D state, and at least triple the count before |
+| `process.zombies`         | LOW    | At least 5 zombies, and at least double the count before |
 | `process.total`           | INFO   | Process count changed by at least 10 and 10% |
 
 ### Network

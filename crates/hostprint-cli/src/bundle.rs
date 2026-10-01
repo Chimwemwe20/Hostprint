@@ -8,18 +8,19 @@
 //!   snapshot.json      the snapshot (the documented snapshot format)
 //!   baseline.json      the snapshot it was compared with (with --against)
 //!   diff.json          the comparison (with --against)
-//!   report.md          human-readable summary
+//!   report.md          human-readable summary (Markdown)
+//!   report.html        the same, as a standalone page
 //!   logs/*.log         collected log lines, one file per source
 //!   checksums.sha256   `sha256sum -c` compatible
 //! ```
 
 use crate::style::tilde;
-use crate::{capture, report, App, BundleArgs};
+use crate::{capture, html, report, App, BundleArgs};
 use anyhow::{bail, Context, Result};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use hostprint_collectors::redact::hex;
-use hostprint_diff::{Diff, Significance};
+use hostprint_diff::Diff;
 use hostprint_model::format::bytes;
 use hostprint_model::Snapshot;
 use serde_json::json;
@@ -42,15 +43,8 @@ pub fn run(app: &App, args: BundleArgs) -> Result<ExitCode> {
     let baseline = args.against.as_deref().map(|r| app.store.resolve(r)).transpose()?;
     let diff = baseline.as_ref().map(|b| hostprint_diff::diff(b, &snapshot, &App::diff_options(&config)));
 
-    let root = format!("{}-{}", snapshot.name, snapshot.captured_at.format("%Y%m%d-%H%M%S"));
-    let output = args.output.unwrap_or_else(|| PathBuf::from(format!("{root}.tar.gz")));
-    if output.exists() {
-        bail!("{} already exists (choose another path with --output)", output.display());
-    }
-
-    let files = contents(&snapshot, baseline.as_ref(), diff.as_ref())?;
-    write_archive(&output, &root, &files).with_context(|| format!("writing {}", output.display()))?;
-
+    let written = write(&snapshot, baseline.as_ref(), diff.as_ref(), args.output)?;
+    let (output, root, files) = (written.path, written.root, written.files);
     let size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
     println!("Bundle written: {} ({})", app.style.bold(&tilde(&output)), bytes(size));
     for (path, data) in &files {
@@ -70,6 +64,31 @@ pub fn run(app: &App, args: BundleArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+pub struct Written {
+    pub path: PathBuf,
+    /// The archive's top-level directory.
+    pub root: String,
+    pub files: Vec<(String, Vec<u8>)>,
+}
+
+/// Writes a bundle to `output`, or to `<name>-<timestamp>.tar.gz` in the
+/// current directory. Never overwrites.
+pub fn write(
+    snapshot: &Snapshot,
+    baseline: Option<&Snapshot>,
+    diff: Option<&Diff>,
+    output: Option<PathBuf>,
+) -> Result<Written> {
+    let root = format!("{}-{}", snapshot.name, snapshot.captured_at.format("%Y%m%d-%H%M%S"));
+    let path = output.unwrap_or_else(|| PathBuf::from(format!("{root}.tar.gz")));
+    if path.exists() {
+        bail!("{} already exists (choose another path with --output)", path.display());
+    }
+    let files = contents(snapshot, baseline, diff)?;
+    write_archive(&path, &root, &files).with_context(|| format!("writing {}", path.display()))?;
+    Ok(Written { path, root, files })
+}
+
 /// The files of the bundle, in archive order, ending with the manifest and
 /// the checksums that cover everything before them.
 pub fn contents(
@@ -85,12 +104,8 @@ pub fn contents(
         files.push(("diff.json".into(), pretty(d)?));
     }
 
-    let mut md = report::snapshot_markdown(snapshot);
-    if let Some(d) = diff {
-        md.push_str("\n---\n\n");
-        md.push_str(&report::diff_markdown(d, Significance::Info));
-    }
-    files.push(("report.md".into(), md.into_bytes()));
+    files.push(("report.md".into(), report::combined_markdown(snapshot, diff).into_bytes()));
+    files.push(("report.html".into(), html::report(snapshot, diff).into_bytes()));
 
     if let Some(logs) = &snapshot.logs {
         let mut used = std::collections::HashSet::new();

@@ -67,7 +67,8 @@ crates/
   hostprint-storage/     ~/.hostprint: snapshots, permissions, fingerprint key
   hostprint-diff/        Comparison rules and significance
   hostprint-cli/         The `hostprint` binary: arguments, rendering, Markdown
-                         reports, bundles, baselines
+                         and HTML reports, bundles, baselines
+    src/tui/             `hostprint tui` and `watch` (ratatui, `tui` feature)
 docs/
   diff-rules.md          Every rule and its threshold
   snapshot-format.md     The documented, versioned file format
@@ -79,7 +80,20 @@ scripts/dev.ps1, dev.sh  Docker-based build, test and run
 
 Dependencies flow one way: `model` ← `collectors` ← `core` ← `cli`, with
 `diff` and `storage` depending only on `model`. Keep dependencies few; every
-crate added ends up in a binary people run on production machines.
+crate added ends up in a binary people run on production machines. The
+terminal UI's dependency (`ratatui`) sits behind the default `tui` feature, so
+`--no-default-features` builds a binary without it.
+
+## Working on the terminal UI
+
+Each screen in `src/tui` is a `View`: plain state, a `key` handler and a `draw`
+function. Tests drive a view with key events and assert on the text it
+renders into ratatui's `TestBackend` (`tui::testing::render`), using the
+snapshots in `tui/fixtures.rs`. Captures run on a worker thread (`tui::Job`),
+so never block in `key` or `draw`.
+
+To try the real thing in a terminal, `./scripts/dev.sh run tui` (inside the
+container) or run `dist/hostprint tui` on a Linux machine.
 
 ## Adding a collector
 

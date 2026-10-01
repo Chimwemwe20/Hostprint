@@ -19,7 +19,7 @@ hostprint diff healthy ./web-2.hostprint
 
 Incident bundles (`hostprint bundle`) are `.tar.gz` archives with one
 top-level directory containing `snapshot.json` (this format), optionally
-`baseline.json` and `diff.json`, `report.md`, `logs/<kind>-<source>.log`,
+`baseline.json` and `diff.json`, `report.md`, `report.html`, `logs/<kind>-<source>.log`,
 `manifest.json` (`bundleVersion: 1`, the snapshot references and every file's
 size and SHA-256), and `checksums.sha256` in `sha256sum -c` format.
 
