@@ -51,8 +51,8 @@ Some values change on every capture. They are never compared directly:
 | ------------------ | ------ | ------------------------------------------------------------ |
 | `collector.failed` | MEDIUM | A collector that produced data before now fails (e.g. Docker daemon not reachable) |
 
-A collector that is skipped (not installed, not a Git repository) only adds a
-note.
+A collector that is skipped (not installed, not a Git repository, turned off
+with `--skip` or `[collectors] disable`) only adds a note.
 
 ### System
 
@@ -234,3 +234,23 @@ otherwise a note says how many could not be compared.
 | `file.error`     | LOW    | The file could not be read in one snapshot |
 | `file.touched`   | INFO   | Modification time changed, content did not |
 | `file.tracked` / `file.untracked` | INFO | The file is only configured in one snapshot |
+
+### Logs
+
+Compared only when both snapshots collected logs (`--logs-since` or
+`collect_logs = true`). Sources are matched by kind and name: a journal unit,
+a container, or a file. A source with no lines in the window counts as zero
+errors.
+
+| Rule            | Level  | When |
+| --------------- | ------ | ---- |
+| `log.errors`    | MEDIUM | Error lines appeared where there were none, or at least tripled and grew by 10 or more |
+|                 | LOW    | Error lines increased |
+|                 | INFO   | Error lines went back to zero |
+| `log.new_error` | LOW    | An error message (with numbers and IDs normalised away) that wasn't among the source's top errors before; up to 3 per source |
+
+Journal lines at priority `err` or worse count as errors and `warning` as
+warnings; only those priorities are collected. For container output and log
+files, a line is an error if it contains a word such as `error`, `fatal`,
+`panic`, `exception` or `traceback`. If the two snapshots used log windows of
+different lengths, a note says the counts are not directly comparable.

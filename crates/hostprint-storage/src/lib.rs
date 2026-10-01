@@ -4,9 +4,11 @@
 //! ~/.hostprint/
 //! ├── config.toml
 //! ├── fingerprint.key      secret-fingerprint key, 0600
-//! └── snapshots/
-//!     ├── healthy.hp       snapshot JSON, 0600
-//!     └── incident.hp
+//! ├── snapshots/
+//! │   ├── healthy.hp       snapshot JSON, 0600
+//! │   └── incident.hp
+//! └── baselines/
+//!     └── production.hp    known-good state for `hostprint check`
 //! ```
 //!
 //! Snapshots can contain sensitive operational detail even after redaction,
@@ -19,15 +21,51 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub const SNAPSHOT_EXTENSION: &str = "hp";
+/// Extension of exported snapshots meant to be shared.
+pub const EXPORT_EXTENSION: &str = "hostprint";
 const KEY_LEN: usize = 32;
 const MAX_NAME_LEN: usize = 64;
 
+/// The two kinds of stored snapshot. They share a format and differ only in
+/// where they live and how they are used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Snapshot,
+    /// A known-good state that `hostprint check` compares against.
+    Baseline,
+}
+
+impl Kind {
+    fn dir_name(self) -> &'static str {
+        match self {
+            Kind::Snapshot => "snapshots",
+            Kind::Baseline => "baselines",
+        }
+    }
+
+    fn list_command(self) -> &'static str {
+        match self {
+            Kind::Snapshot => "hostprint list",
+            Kind::Baseline => "hostprint baseline list",
+        }
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Kind::Snapshot => "snapshot",
+            Kind::Baseline => "baseline",
+        })
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
-    #[error("no snapshot named '{0}' (see `hostprint list`)")]
-    NotFound(String),
-    #[error("a snapshot named '{0}' already exists (use --force to replace it)")]
-    AlreadyExists(String),
+    #[error("no {kind} named '{name}' (see `{}`)", .kind.list_command())]
+    NotFound { kind: Kind, name: String },
+    #[error("a {kind} named '{name}' already exists (use --force to replace it)")]
+    AlreadyExists { kind: Kind, name: String },
     #[error("invalid snapshot name '{0}': use 1-64 letters, digits, '.', '_' or '-', not starting with '.' or '-'")]
     InvalidName(String),
     #[error("{}: written by a newer Hostprint (schema {}; this version reads up to {})", .path.display(), .found, .supported)]
@@ -92,7 +130,11 @@ impl Store {
     }
 
     pub fn snapshots_dir(&self) -> PathBuf {
-        self.root.join("snapshots")
+        self.dir(Kind::Snapshot)
+    }
+
+    pub fn dir(&self, kind: Kind) -> PathBuf {
+        self.root.join(kind.dir_name())
     }
 
     pub fn config_path(&self) -> PathBuf {
@@ -104,7 +146,11 @@ impl Store {
     }
 
     pub fn snapshot_path(&self, name: &str) -> PathBuf {
-        self.snapshots_dir().join(format!("{name}.{SNAPSHOT_EXTENSION}"))
+        self.path_of(Kind::Snapshot, name)
+    }
+
+    pub fn path_of(&self, kind: Kind, name: &str) -> PathBuf {
+        self.dir(kind).join(format!("{name}.{SNAPSHOT_EXTENSION}"))
     }
 
     /// Creates the storage directories with private permissions.
@@ -114,28 +160,40 @@ impl Store {
     }
 
     pub fn exists(&self, name: &str) -> bool {
-        self.snapshot_path(name).exists()
+        self.exists_in(Kind::Snapshot, name)
+    }
+
+    pub fn exists_in(&self, kind: Kind, name: &str) -> bool {
+        self.path_of(kind, name).exists()
     }
 
     /// Writes a snapshot atomically. Returns the file path.
     pub fn save(&self, snapshot: &Snapshot, overwrite: bool) -> Result<PathBuf> {
+        self.save_in(Kind::Snapshot, snapshot, overwrite)
+    }
+
+    /// Writes a snapshot of the given kind, named after `snapshot.name`.
+    pub fn save_in(&self, kind: Kind, snapshot: &Snapshot, overwrite: bool) -> Result<PathBuf> {
         validate_name(&snapshot.name)?;
         self.init()?;
-        let path = self.snapshot_path(&snapshot.name);
+        create_private_dir(&self.dir(kind))?;
+        let path = self.path_of(kind, &snapshot.name);
         if path.exists() && !overwrite {
-            return Err(StorageError::AlreadyExists(snapshot.name.clone()));
+            return Err(StorageError::AlreadyExists { kind, name: snapshot.name.clone() });
         }
-        let mut json = serde_json::to_vec_pretty(snapshot).expect("snapshots always serialize");
-        json.push(b'\n');
-        write_private(&path, &json)?;
+        write_private(&path, &to_json(snapshot))?;
         Ok(path)
     }
 
     pub fn load(&self, name: &str) -> Result<Snapshot> {
+        self.load_from(Kind::Snapshot, name)
+    }
+
+    pub fn load_from(&self, kind: Kind, name: &str) -> Result<Snapshot> {
         validate_name(name)?;
-        let path = self.snapshot_path(name);
+        let path = self.path_of(kind, name);
         if !path.exists() {
-            return Err(StorageError::NotFound(name.to_string()));
+            return Err(StorageError::NotFound { kind, name: name.to_string() });
         }
         read_snapshot_file(&path)
     }
@@ -144,8 +202,7 @@ impl Store {
     pub fn resolve(&self, reference: &str) -> Result<Snapshot> {
         let looks_like_path = reference.contains('/')
             || reference.contains('\\')
-            || reference.ends_with(".json")
-            || reference.ends_with(&format!(".{SNAPSHOT_EXTENSION}"));
+            || [".json", ".hp", ".hostprint"].iter().any(|ext| reference.ends_with(ext));
         if looks_like_path && Path::new(reference).is_file() {
             return read_snapshot_file(Path::new(reference));
         }
@@ -153,18 +210,41 @@ impl Store {
     }
 
     pub fn delete(&self, name: &str) -> Result<PathBuf> {
+        self.delete_from(Kind::Snapshot, name)
+    }
+
+    pub fn delete_from(&self, kind: Kind, name: &str) -> Result<PathBuf> {
         validate_name(name)?;
-        let path = self.snapshot_path(name);
+        let path = self.path_of(kind, name);
         match fs::remove_file(&path) {
             Ok(()) => Ok(path),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Err(StorageError::NotFound(name.to_string())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                Err(StorageError::NotFound { kind, name: name.to_string() })
+            }
             Err(e) => Err(io_err(&path)(e)),
         }
     }
 
+    /// Writes a snapshot to `path` for sharing, with private permissions.
+    /// Refuses to overwrite an existing file unless `overwrite` is set.
+    pub fn export(&self, snapshot: &Snapshot, path: &Path, overwrite: bool) -> Result<()> {
+        if path.exists() && !overwrite {
+            return Err(StorageError::Io {
+                path: path.to_path_buf(),
+                source: io::Error::new(io::ErrorKind::AlreadyExists, "file exists (use --force to replace it)"),
+            });
+        }
+        write_private(path, &to_json(snapshot))
+    }
+
     /// Stored snapshots, oldest first.
     pub fn list(&self) -> Result<Vec<Entry>> {
-        let dir = self.snapshots_dir();
+        self.list_in(Kind::Snapshot)
+    }
+
+    /// Stored snapshots of one kind, oldest first.
+    pub fn list_in(&self, kind: Kind) -> Result<Vec<Entry>> {
+        let dir = self.dir(kind);
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -230,6 +310,12 @@ pub fn validate_name(name: &str) -> Result<()> {
     } else {
         Err(StorageError::InvalidName(name.to_string()))
     }
+}
+
+fn to_json(snapshot: &Snapshot) -> Vec<u8> {
+    let mut json = serde_json::to_vec_pretty(snapshot).expect("snapshots always serialize");
+    json.push(b'\n');
+    json
 }
 
 /// Reads a snapshot file, refusing schema versions newer than this build.
@@ -334,6 +420,7 @@ mod tests {
             runtimes: None,
             environment: None,
             files: None,
+            logs: None,
         }
     }
 
@@ -343,13 +430,45 @@ mod tests {
         let path = store.save(&snapshot("healthy"), false).unwrap();
         assert_eq!(store.load("healthy").unwrap(), snapshot("healthy"));
         assert_eq!(store.resolve(path.to_str().unwrap()).unwrap().name, "healthy");
-        assert!(matches!(store.save(&snapshot("healthy"), false), Err(StorageError::AlreadyExists(_))));
+        assert!(matches!(
+            store.save(&snapshot("healthy"), false),
+            Err(StorageError::AlreadyExists { kind: Kind::Snapshot, .. })
+        ));
         store.save(&snapshot("healthy"), true).unwrap();
         let listed = store.list().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "healthy");
         store.delete("healthy").unwrap();
-        assert!(matches!(store.load("healthy"), Err(StorageError::NotFound(_))));
+        let err = store.load("healthy").unwrap_err();
+        assert!(matches!(err, StorageError::NotFound { .. }));
+        assert_eq!(err.to_string(), "no snapshot named 'healthy' (see `hostprint list`)");
+        let _ = fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn baselines_are_kept_apart_from_snapshots() {
+        let store = temp_store("baselines");
+        store.save_in(Kind::Baseline, &snapshot("production"), false).unwrap();
+        assert!(store.exists_in(Kind::Baseline, "production"));
+        assert!(!store.exists("production"));
+        assert_eq!(store.list().unwrap().len(), 0);
+        assert_eq!(store.list_in(Kind::Baseline).unwrap()[0].name, "production");
+        assert_eq!(store.load_from(Kind::Baseline, "production").unwrap().name, "production");
+        let err = store.load_from(Kind::Baseline, "staging").unwrap_err();
+        assert_eq!(err.to_string(), "no baseline named 'staging' (see `hostprint baseline list`)");
+        store.delete_from(Kind::Baseline, "production").unwrap();
+        let _ = fs::remove_dir_all(store.root());
+    }
+
+    #[test]
+    fn exports_refuse_to_overwrite() {
+        let store = temp_store("export");
+        let out = store.root().join("out.hostprint");
+        fs::create_dir_all(store.root()).unwrap();
+        store.export(&snapshot("s"), &out, false).unwrap();
+        assert_eq!(store.resolve(out.to_str().unwrap()).unwrap().name, "s");
+        assert!(store.export(&snapshot("s"), &out, false).is_err());
+        store.export(&snapshot("s"), &out, true).unwrap();
         let _ = fs::remove_dir_all(store.root());
     }
 

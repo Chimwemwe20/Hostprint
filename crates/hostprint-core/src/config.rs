@@ -10,8 +10,10 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct Config {
     pub hostprint: General,
+    pub collectors: Collectors,
     pub files: Files,
     pub env: Env,
+    pub logs: LogsConfig,
     pub redact: Redact,
     pub ignore: Ignore,
 }
@@ -21,8 +23,68 @@ pub struct Config {
 pub struct General {
     /// Turning this off stores secret values verbatim. Not recommended.
     pub redact_secrets: bool,
-    /// Reserved for log collection (planned for v0.2).
+    /// Collect recent logs on every capture (`capture --logs-since` does it
+    /// for one capture).
     pub collect_logs: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Collectors {
+    /// Collectors to turn off, e.g. `["runtimes"]`.
+    pub disable: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogsConfig {
+    /// How far back to read, e.g. "30m" or "2h".
+    #[serde(alias = "journal_since")]
+    pub since: String,
+    /// systemd journal entries at warning level and worse.
+    pub journal: bool,
+    /// Output of Docker containers.
+    pub docker: bool,
+    /// Plain log files; only their last 256 KiB is read.
+    pub files: Vec<PathBuf>,
+    /// Lines kept per source.
+    pub lines: usize,
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        LogsConfig { since: "30m".into(), journal: true, docker: true, files: Vec::new(), lines: 50 }
+    }
+}
+
+/// Parses a duration such as "90s", "30m", "2h", "1d" or "1h30m".
+pub fn parse_duration(input: &str) -> Result<std::time::Duration, String> {
+    let s = input.trim();
+    let invalid = || format!("invalid duration '{input}' (use e.g. 30m, 2h, 1h30m)");
+    if s.is_empty() {
+        return Err(invalid());
+    }
+    let mut total = 0u64;
+    let mut number = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            number.push(c);
+            continue;
+        }
+        let n: u64 = number.parse().map_err(|_| invalid())?;
+        number.clear();
+        total += n * match c {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86_400,
+            _ => return Err(invalid()),
+        };
+    }
+    if !number.is_empty() || total == 0 {
+        return Err(invalid());
+    }
+    Ok(std::time::Duration::from_secs(total))
 }
 
 impl Default for General {
@@ -132,6 +194,31 @@ mod tests {
         assert_eq!(config.ignore.processes, ["chrome"]);
         assert_eq!(config.ignore.ports, [5353]);
         assert!(config.env.capture_process, "unspecified sections keep defaults");
+    }
+
+    #[test]
+    fn parses_logs_and_collectors() {
+        let config = Config::parse(
+            "[hostprint]\ncollect_logs = true\n[logs]\njournal_since = \"20m\"\nfiles = [\"/var/log/app.log\"]\n\
+             [collectors]\ndisable = [\"runtimes\"]\n",
+        )
+        .unwrap();
+        assert!(config.hostprint.collect_logs);
+        assert_eq!(config.logs.since, "20m", "the design doc's journal_since name works");
+        assert!(config.logs.docker);
+        assert_eq!(config.collectors.disable, ["runtimes"]);
+    }
+
+    #[test]
+    fn parses_durations() {
+        let secs = |s: &str| parse_duration(s).map(|d| d.as_secs());
+        assert_eq!(secs("90s"), Ok(90));
+        assert_eq!(secs("30m"), Ok(1800));
+        assert_eq!(secs("1h30m"), Ok(5400));
+        assert_eq!(secs("2d"), Ok(172_800));
+        for bad in ["", "30", "m", "5x", "0m"] {
+            assert!(parse_duration(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

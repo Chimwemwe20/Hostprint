@@ -32,8 +32,8 @@ pub fn run(app: &App) -> Result<ExitCode> {
         (
             "journalctl",
             match which("journalctl") {
-                Some(p) => Check::Ok(format!("{} (log collection arrives in v0.2)", p.display())),
-                None => Check::Absent("not found".into()),
+                Some(p) => Check::Ok(format!("{} (journal logs with --logs-since)", p.display())),
+                None => Check::Absent("not found (journal logs unavailable; Docker and file logs still work)".into()),
             },
         ),
         ("Git", git(&ctx)),

@@ -12,6 +12,7 @@ pub mod docker;
 pub mod environment;
 pub mod files;
 pub mod git;
+pub mod logs;
 pub mod network;
 pub mod processes;
 pub mod redact;
@@ -45,6 +46,8 @@ pub struct CaptureContext {
     pub env_files: Vec<PathBuf>,
     /// Files to fingerprint.
     pub file_paths: Vec<PathBuf>,
+    /// Log collection settings; `None` leaves logs out (the default).
+    pub logs: Option<logs::LogOptions>,
     /// Process whose subtree is excluded from the process list (Hostprint
     /// itself, so its helper commands don't show up as changes).
     pub self_pid: Option<u32>,
@@ -65,6 +68,7 @@ impl CaptureContext {
             capture_process_env: true,
             env_files: Vec::new(),
             file_paths: Vec::new(),
+            logs: None,
             self_pid: Some(std::process::id()),
             command_timeout: Duration::from_secs(5),
             collector_timeout: Duration::from_secs(20),
@@ -105,6 +109,7 @@ pub enum Section {
     Runtimes(Vec<model::Runtime>),
     Environment(model::Environment),
     Files(Vec<model::FileFingerprint>),
+    Logs(model::Logs),
 }
 
 /// A successful collection.
@@ -191,5 +196,87 @@ pub fn default_collectors() -> Vec<Arc<dyn Collector>> {
         Arc::new(runtimes::RuntimeCollector),
         Arc::new(environment::EnvironmentCollector),
         Arc::new(files::FileCollector),
+        Arc::new(logs::LogCollector),
     ]
+}
+
+/// Applies `--only` / `--skip` / `[collectors] disable`. Collectors that are
+/// turned off still appear in the capture report, as skipped with "disabled",
+/// so a diff can tell "turned off" from "failed".
+pub fn select(
+    collectors: Vec<Arc<dyn Collector>>,
+    only: &[String],
+    skip: &[String],
+) -> Result<Vec<Arc<dyn Collector>>, String> {
+    let known: Vec<&str> = collectors.iter().map(|c| c.name()).collect();
+    if let Some(unknown) = only.iter().chain(skip).find(|n| !known.contains(&n.as_str())) {
+        return Err(format!("unknown collector '{unknown}' (known: {})", known.join(", ")));
+    }
+    Ok(collectors
+        .into_iter()
+        .map(|c| {
+            let on = (only.is_empty() || only.iter().any(|n| n == c.name())) && !skip.iter().any(|n| n == c.name());
+            if on {
+                c
+            } else {
+                Arc::new(Disabled { name: c.name(), title: c.title() }) as Arc<dyn Collector>
+            }
+        })
+        .collect())
+}
+
+/// Stand-in for a collector turned off by configuration.
+struct Disabled {
+    name: &'static str,
+    title: &'static str,
+}
+
+impl Collector for Disabled {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn title(&self) -> &'static str {
+        self.title
+    }
+
+    fn collect(&self, _ctx: &CaptureContext) -> Result<Collected, CollectError> {
+        Err(CollectError::Unavailable("disabled".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fake(&'static str);
+    impl Collector for Fake {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn title(&self) -> &'static str {
+            self.0
+        }
+        fn collect(&self, _: &CaptureContext) -> Result<Collected, CollectError> {
+            Err(CollectError::Failed("ran".into()))
+        }
+    }
+
+    #[test]
+    fn selects_collectors() {
+        let all = || -> Vec<Arc<dyn Collector>> {
+            vec![Arc::new(Fake("system")), Arc::new(Fake("git")), Arc::new(Fake("logs"))]
+        };
+        let ctx = CaptureContext::new(Redactor::new(b"k"));
+        let enabled = |v: &[Arc<dyn Collector>]| -> Vec<&'static str> {
+            v.iter().filter(|c| matches!(c.collect(&ctx), Err(CollectError::Failed(_)))).map(|c| c.name()).collect()
+        };
+        let only = select(all(), &["system".into(), "logs".into()], &[]).unwrap();
+        assert_eq!(only.len(), 3, "disabled collectors still report");
+        assert_eq!(enabled(&only), ["system", "logs"]);
+        assert_eq!(only[1].collect(&ctx).unwrap_err(), CollectError::Unavailable("disabled".into()));
+        assert_eq!(enabled(&select(all(), &[], &["git".into()]).unwrap()), ["system", "logs"]);
+        assert!(matches!(select(all(), &["bogus".into()], &[]), Err(e) if e.contains("unknown collector")));
+        assert_eq!(default_collectors().len(), 11);
+    }
 }

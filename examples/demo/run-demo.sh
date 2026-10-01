@@ -28,7 +28,8 @@ git_app() {
 }
 
 capture() {
-    "$HOSTPRINT" capture --name "$1" --force --quiet --repo "$WORK/app" --env-file "$WORK/app/.env" >/dev/null
+    "$HOSTPRINT" capture --name "$1" --force --quiet --logs-since 10m \
+        --repo "$WORK/app" --env-file "$WORK/app/.env" >/dev/null
     echo "    captured '$1'"
 }
 
@@ -56,3 +57,7 @@ capture broken
 
 echo
 "$HOSTPRINT" diff healthy broken
+
+echo
+echo "==> Bundling the evidence"
+"$HOSTPRINT" bundle broken --against healthy --output "$WORK/incident.tar.gz" 2>/dev/null

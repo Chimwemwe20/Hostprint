@@ -145,3 +145,157 @@ fn doctor_runs() {
     assert!(stdout(&out).contains("Hostprint Doctor"));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// Reads a .tar.gz into (path, contents) pairs.
+fn read_bundle(path: &Path) -> Vec<(String, Vec<u8>)> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).unwrap();
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    archive
+        .entries()
+        .unwrap()
+        .map(|e| {
+            let mut e = e.unwrap();
+            let name = e.path().unwrap().to_string_lossy().into_owned();
+            let mut data = Vec::new();
+            e.read_to_end(&mut data).unwrap();
+            (name, data)
+        })
+        .collect()
+}
+
+#[test]
+fn logs_are_collected_bounded_and_redacted() {
+    let home = temp_home("logs");
+    std::fs::create_dir_all(&home).unwrap();
+    let log = home.join("app.log");
+    let mut lines: String = (0..80).map(|i| format!("GET /health {i} 200\n")).collect();
+    lines.push_str("ERROR payment failed: card declined token=tok_live_secret123\n");
+    std::fs::write(&log, lines).unwrap();
+    std::fs::write(home.join("config.toml"), format!("[logs]\nfiles = [\"{}\"]\nlines = 10\n", log.display())).unwrap();
+
+    assert_ok(&hostprint(&home, &["capture", "--name", "l", "--logs-since", "10m", "--quiet"]));
+    let raw = std::fs::read_to_string(home.join("snapshots/l.hp")).unwrap();
+    assert!(!raw.contains("tok_live_secret123"), "secret in a log line leaked");
+    let snap: Value = serde_json::from_str(&raw).unwrap();
+    let source = snap["logs"]["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["kind"] == "file")
+        .expect("file log source")
+        .clone();
+    assert_eq!(source["total"], 81);
+    assert_eq!(source["errors"], 1);
+    assert_eq!(source["lines"].as_array().unwrap().len(), 10, "kept lines are capped");
+    assert_eq!(source["truncated"], true);
+    assert!(source["lines"][9].as_str().unwrap().ends_with("token=[REDACTED]"));
+
+    let show = hostprint(&home, &["show", "l", "--section", "logs"]);
+    assert_ok(&show);
+    assert!(stdout(&show).contains("81 lines · 1 error · 0 warnings"), "{}", stdout(&show));
+
+    // Without --logs-since logs are off, and say so.
+    assert_ok(&hostprint(&home, &["capture", "--name", "nologs", "--quiet"]));
+    let snap: Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("snapshots/nologs.hp")).unwrap()).unwrap();
+    assert!(snap.get("logs").is_none());
+    let report =
+        snap["capture"]["collectors"].as_array().unwrap().iter().find(|c| c["name"] == "logs").unwrap().clone();
+    assert_eq!(report["status"], "skipped");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn collectors_can_be_skipped() {
+    let home = temp_home("skip");
+    assert_ok(&hostprint(&home, &["capture", "--name", "s", "--skip", "runtimes,git", "--quiet"]));
+    let snap: Value = serde_json::from_str(&std::fs::read_to_string(home.join("snapshots/s.hp")).unwrap()).unwrap();
+    assert!(snap.get("runtimes").is_none());
+    let status = |name: &str| {
+        snap["capture"]["collectors"].as_array().unwrap().iter().find(|c| c["name"] == name).unwrap().clone()
+    };
+    assert_eq!(status("runtimes")["message"], "disabled");
+    assert_eq!(status("system")["status"], "ok");
+    let bad = hostprint(&home, &["capture", "--name", "t", "--only", "nope"]);
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown collector 'nope'"));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn bundles_contain_snapshot_diff_report_and_checksums() {
+    let home = temp_home("bundle");
+    assert_ok(&hostprint(&home, &["capture", "--name", "before", "--quiet"]));
+    assert_ok(&hostprint(&home, &["capture", "--name", "after", "--quiet"]));
+    let out_path = home.join("incident.tar.gz");
+    let out = hostprint(&home, &["bundle", "after", "--against", "before", "-o", out_path.to_str().unwrap()]);
+    assert_ok(&out);
+    assert!(stdout(&out).contains("Bundle written"));
+
+    let files = read_bundle(&out_path);
+    let names: Vec<&str> = files.iter().map(|(n, _)| n.split_once('/').unwrap().1).collect();
+    for expected in ["snapshot.json", "baseline.json", "diff.json", "report.md", "manifest.json", "checksums.sha256"] {
+        assert!(names.contains(&expected), "{expected} missing from {names:?}");
+    }
+    let get = |name: &str| &files.iter().find(|(n, _)| n.ends_with(&format!("/{name}"))).unwrap().1;
+    let report = String::from_utf8_lossy(get("report.md"));
+    assert!(report.contains("# Hostprint snapshot: `after`"));
+    assert!(report.contains("# Hostprint diff: `before` → `after`"));
+
+    // Every checksum matches its file.
+    use sha2::Digest;
+    let checksums = String::from_utf8_lossy(get("checksums.sha256")).into_owned();
+    assert_eq!(checksums.lines().count(), files.len() - 1);
+    for line in checksums.lines() {
+        let (hash, name) = line.split_once("  ").unwrap();
+        let actual: String = sha2::Sha256::digest(get(name)).iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hash, actual, "{name}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&out_path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    // Refuses to overwrite.
+    let again = hostprint(&home, &["bundle", "after", "-o", out_path.to_str().unwrap()]);
+    assert_eq!(again.status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn baselines_check_and_export() {
+    let home = temp_home("baseline");
+    let created = hostprint(&home, &["baseline", "create", "production"]);
+    assert_ok(&created);
+    assert!(stdout(&created).contains("Baseline saved: production"));
+    assert!(stdout(&hostprint(&home, &["baseline", "list"])).contains("production"));
+    assert!(stdout(&hostprint(&home, &["list"])).contains("No snapshots"), "baselines are not snapshots");
+
+    // Nothing significant changes between creating a baseline and checking it.
+    let check = hostprint(&home, &["check", "production"]);
+    assert_eq!(check.status.code(), Some(0), "{}", stdout(&check));
+    assert!(stdout(&check).contains("Nothing at MEDIUM or above"));
+
+    // A baseline from a doctored snapshot fails the check.
+    assert_ok(&hostprint(&home, &["capture", "--name", "s", "--quiet"]));
+    let path = home.join("snapshots/s.hp");
+    let mut snap: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    snap["host"]["hostname"] = "some-other-host".into();
+    let edited = home.join("edited.hp");
+    std::fs::write(&edited, serde_json::to_vec(&snap).unwrap()).unwrap();
+    assert_ok(&hostprint(&home, &["baseline", "create", "drifted", "--from", edited.to_str().unwrap()]));
+    let check = hostprint(&home, &["check", "drifted", "--format", "markdown"]);
+    assert_eq!(check.status.code(), Some(1));
+    let md = stdout(&check);
+    assert!(md.contains("## MEDIUM") && md.contains("`system.hostname`"), "{md}");
+
+    let export = home.join("s.hostprint");
+    assert_ok(&hostprint(&home, &["export", "s", "-o", export.to_str().unwrap()]));
+    assert_ok(&hostprint(&home, &["diff", "s", export.to_str().unwrap(), "--fail-on", "low"]));
+    assert_eq!(hostprint(&home, &["export", "s", "-o", export.to_str().unwrap()]).status.code(), Some(2));
+
+    assert_ok(&hostprint(&home, &["baseline", "delete", "production"]));
+    assert_eq!(hostprint(&home, &["check", "production"]).status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&home);
+}

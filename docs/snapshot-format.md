@@ -5,12 +5,23 @@ A snapshot is one UTF-8 JSON document. Stored snapshots live in
 so they diff and review well in plain tools. `hostprint show <name> --json`
 prints the same document; `hostprint capture --json` prints it on stdout.
 
-Any `.hp` or `.json` snapshot file can be passed wherever a snapshot name is
-accepted, so snapshots can be copied between machines and compared:
+Baselines (`hostprint baseline create`) use the same format and live in
+`~/.hostprint/baselines/<name>.hp`. `hostprint export <name>` writes a copy as
+`<name>.hostprint` for sharing.
+
+Any `.hp`, `.hostprint` or `.json` snapshot file can be passed wherever a
+snapshot name is accepted, so snapshots can be copied between machines and
+compared:
 
 ```sh
-hostprint diff healthy ./incident-from-web-2.hp
+hostprint diff healthy ./web-2.hostprint
 ```
+
+Incident bundles (`hostprint bundle`) are `.tar.gz` archives with one
+top-level directory containing `snapshot.json` (this format), optionally
+`baseline.json` and `diff.json`, `report.md`, `logs/<kind>-<source>.log`,
+`manifest.json` (`bundleVersion: 1`, the snapshot references and every file's
+size and SHA-256), and `checksums.sha256` in `sha256sum -c` format.
 
 ## Versioning
 
@@ -34,7 +45,7 @@ Keys are camelCase. Optional values are omitted rather than `null`.
 | `name`          | string | Snapshot name |
 | `capturedAt`    | string | RFC 3339 UTC timestamp |
 | `capture`       | object | How the snapshot was taken (below) |
-| `host`, `resources`, `processes`, `network`, `services`, `docker`, `git`, `runtimes`, `environment`, `files` | object / array | One section per collector |
+| `host`, `resources`, `processes`, `network`, `services`, `docker`, `git`, `runtimes`, `environment`, `files`, `logs` | object / array | One section per collector |
 
 A missing section means it was **not collected**, which is different from an
 empty one. `capture.collectors` says why.
@@ -81,9 +92,17 @@ empty one. `capture.collectors` says why.
 | `runtimes`    | `runtimes`    | `name`, `version`, `path` for runtimes found on `PATH` |
 | `environment` | `environment` | `fingerprintKeyId` and `variables` (`name`, `source`, `value`, `redacted`, `fingerprint`) |
 | `files`       | `files`       | `path`, `exists`, `size`, `modified`, `sha256`, `mode`, `uid`, `gid`, `error` |
+| `logs`        | `logs`        | `since` (start of the window) and `sources`: `kind` (`journal`, `docker`, `file`), `name`, `total`, `errors` and `warnings` (counted over the whole window), `topErrors` (`pattern`, `count`, `example`), `lines` (most recent, redacted, oldest first), `truncated` |
 
 Byte quantities are plain integers in bytes. Disk `usedBytes` excludes
 reserved blocks the same way `df` does.
+
+Log collection is opt-in. Bounds: lines kept per source (`[logs] lines`,
+default 50), 500 characters per line, 100 sources, 5000 journal entries,
+the last 2000 lines per container, and the last 256 KiB of each log file.
+`topErrors` patterns replace every word containing a digit with `#`, so
+"timeout after 3012ms on 10.0.0.5" and "timeout after 87ms on 10.0.0.6" are
+one pattern.
 
 ## Redacted values
 

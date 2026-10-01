@@ -2,11 +2,12 @@ use crate::style::{pad, tilde};
 use crate::App;
 use anyhow::Result;
 use hostprint_model::format;
+use hostprint_storage::Kind;
 use serde_json::json;
 use std::process::ExitCode;
 
-pub fn run(app: &App, as_json: bool) -> Result<ExitCode> {
-    let entries = app.store.list()?;
+pub fn run(app: &App, kind: Kind, as_json: bool) -> Result<ExitCode> {
+    let entries = app.store.list_in(kind)?;
     if as_json {
         let rows: Vec<_> = entries
             .iter()
@@ -30,10 +31,11 @@ pub fn run(app: &App, as_json: bool) -> Result<ExitCode> {
 
     let style = &app.style;
     if entries.is_empty() {
-        println!(
-            "No snapshots in {}. Create one with `hostprint capture --name healthy`.",
-            tilde(&app.store.snapshots_dir())
-        );
+        let hint = match kind {
+            Kind::Snapshot => "hostprint capture --name healthy",
+            Kind::Baseline => "hostprint baseline create production",
+        };
+        println!("No {kind}s in {}. Create one with `{hint}`.", tilde(&app.store.dir(kind)));
         return Ok(ExitCode::SUCCESS);
     }
     let name_w = entries.iter().map(|e| e.name.chars().count()).max().unwrap_or(4).max(4);

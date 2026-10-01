@@ -78,6 +78,7 @@ pub fn capture(name: &str, ctx: &CaptureContext, collectors: &[Arc<dyn Collector
         runtimes: None,
         environment: None,
         files: None,
+        logs: None,
     };
     for (report, section) in outcomes {
         snapshot.capture.collectors.push(report);
@@ -92,6 +93,7 @@ pub fn capture(name: &str, ctx: &CaptureContext, collectors: &[Arc<dyn Collector
             Some(Section::Runtimes(v)) => snapshot.runtimes = Some(v),
             Some(Section::Environment(v)) => snapshot.environment = Some(v),
             Some(Section::Files(v)) => snapshot.files = Some(v),
+            Some(Section::Logs(v)) => snapshot.logs = Some(v),
             None => {}
         }
     }
@@ -175,6 +177,9 @@ pub fn normalize(s: &mut Snapshot) {
     }
     if let Some(f) = &mut s.files {
         f.sort_by(|a, b| a.path.cmp(&b.path));
+    }
+    if let Some(l) = &mut s.logs {
+        l.sources.sort_by(|a, b| (&a.kind, &a.name).cmp(&(&b.kind, &b.name)));
     }
 }
 

@@ -1,5 +1,5 @@
-use crate::style::{clip, pad, Style};
-use crate::{capture, App, DiffArgs};
+use crate::style::{clip, pad, plural, Style};
+use crate::{capture, report, App, DiffArgs, DiffOutput, Format};
 use anyhow::Result;
 use hostprint_diff::{Category, Change, ChangeKind, Diff, Significance};
 use hostprint_model::format;
@@ -14,19 +14,31 @@ pub fn run(app: &App, args: DiffArgs) -> Result<ExitCode> {
     let from = app.store.resolve(&args.from)?;
     let to = match &args.to {
         Some(reference) => app.store.resolve(reference)?,
-        None => capture::live(app, &config, args.repo.clone())?,
+        None => capture::live(app, &config, &args.options, "now", "for comparison (not saved)")?,
     };
     let diff = hostprint_diff::diff(&from, &to, &App::diff_options(&config));
+    print(&diff, &args.output, &app.style)?;
+    Ok(exit_code(&diff, args.fail_on.map(Significance::from)))
+}
 
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&diff)?);
-    } else {
-        let min = if args.all { Significance::Info } else { args.min.into() };
-        print!("{}", render(&diff, min, &app.style));
+/// Prints a diff in the requested format.
+pub fn print(diff: &Diff, output: &DiffOutput, style: &Style) -> Result<()> {
+    match output.format() {
+        Format::Json => println!("{}", serde_json::to_string_pretty(diff)?),
+        Format::Markdown => print!("{}", report::diff_markdown(diff, output.min())),
+        Format::Text => print!("{}", render(diff, output.min(), style)),
     }
-    let failed =
-        args.fail_on.map(Significance::from).is_some_and(|threshold| diff.highest().is_some_and(|h| h >= threshold));
-    Ok(if failed { ExitCode::from(1) } else { ExitCode::SUCCESS })
+    Ok(())
+}
+
+/// 1 if any change reaches `threshold`, else 0.
+pub fn exit_code(diff: &Diff, threshold: Option<Significance>) -> ExitCode {
+    let failed = threshold.is_some_and(|t| diff.highest().is_some_and(|h| h >= t));
+    if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 pub fn render(diff: &Diff, min: Significance, style: &Style) -> String {
@@ -77,7 +89,8 @@ pub fn render(diff: &Diff, min: Significance, style: &Style) -> String {
             format!("No changes at {} or above.", min.label())
         };
         if hidden > 0 {
-            msg.push_str(&style.dim(&format!("  ({hidden} lower-significance changes hidden; --all to show)")));
+            let hidden = plural(hidden as u64, "lower-significance change");
+            msg.push_str(&style.dim(&format!("  ({hidden} hidden; --all to show)")));
         }
         line(msg);
         return out;

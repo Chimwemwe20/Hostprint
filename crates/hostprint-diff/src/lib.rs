@@ -15,6 +15,7 @@ mod application;
 mod configuration;
 mod containers;
 mod files;
+mod logs;
 mod network;
 mod processes;
 mod resources;
@@ -78,6 +79,7 @@ pub enum Category {
     Application,
     Configuration,
     Files,
+    Logs,
 }
 
 impl Category {
@@ -92,6 +94,7 @@ impl Category {
             Category::Application => "APPLICATION",
             Category::Configuration => "CONFIGURATION",
             Category::Files => "FILES",
+            Category::Logs => "LOGS",
         }
     }
 }
@@ -299,6 +302,9 @@ pub fn diff(from: &Snapshot, to: &Snapshot, opts: &DiffOptions) -> Diff {
     if let Some((a, b)) = ctx.pair("files", Category::Files, |s| s.files.as_ref()) {
         files::compare(a, b, ctx.changes);
     }
+    if let Some((a, b)) = ctx.pair("logs", Category::Logs, |s| s.logs.as_ref()) {
+        logs::compare(a, b, from.captured_at, to.captured_at, ctx.changes, ctx.notes);
+    }
 
     changes.sort_by(|a, b| {
         b.significance
@@ -393,6 +399,7 @@ fn collector_title(name: &str) -> &'static str {
         "runtimes" => "Runtimes",
         "environment" => "Environment",
         "files" => "Files",
+        "logs" => "Logs",
         _ => "Collector",
     }
 }

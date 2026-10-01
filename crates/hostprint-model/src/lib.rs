@@ -51,6 +51,8 @@ pub struct Snapshot {
     pub environment: Option<Environment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<FileFingerprint>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logs: Option<Logs>,
 }
 
 impl Snapshot {
@@ -568,6 +570,53 @@ pub struct FileFingerprint {
     pub gid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Logs
+
+/// Recent log lines, bounded by time window, line count and line length.
+/// Lines are redacted like every other value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Logs {
+    /// Start of the collection window.
+    pub since: DateTime<Utc>,
+    pub sources: Vec<LogSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogSource {
+    /// "journal", "docker" or "file".
+    pub kind: String,
+    /// systemd unit or syslog identifier, container name, or file path.
+    pub name: String,
+    /// Lines in the window, including ones not kept in `lines`.
+    pub total: u32,
+    /// Lines that look like errors (journal priority err or worse, or an
+    /// error keyword in other sources).
+    pub errors: u32,
+    pub warnings: u32,
+    /// The most frequent error messages, normalised so that numbers and IDs
+    /// don't make every occurrence unique.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_errors: Vec<LogPattern>,
+    /// The most recent lines, oldest first.
+    pub lines: Vec<String>,
+    /// More lines existed than were kept.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogPattern {
+    /// Message with digits and identifiers replaced, e.g. "connection to # refused".
+    pub pattern: String,
+    pub count: u32,
+    /// One original (redacted) occurrence.
+    pub example: String,
 }
 
 fn is_false(b: &bool) -> bool {

@@ -118,19 +118,25 @@ pub(crate) fn memory_from_stats(stats: &Value) -> (Option<u64>, Option<u64>) {
     (usage.map(|u| u.saturating_sub(cache.unwrap_or(0))), limit)
 }
 
+/// The Engine API client, shared with the log collector.
 #[cfg(unix)]
-mod imp {
+pub(crate) mod imp {
     use super::*;
     use std::io::{self, Read, Write};
     use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::time::Duration;
 
-    pub(super) fn collect(ctx: &CaptureContext) -> Result<Collected, CollectError> {
-        let socket = socket_candidates()?
+    /// The first Docker socket that exists.
+    pub(crate) fn socket() -> Result<PathBuf, CollectError> {
+        socket_candidates()?
             .into_iter()
             .find(|p| p.exists())
-            .ok_or_else(|| CollectError::Unavailable("Docker socket not found".into()))?;
+            .ok_or_else(|| CollectError::Unavailable("Docker socket not found".into()))
+    }
+
+    pub(super) fn collect(ctx: &CaptureContext) -> Result<Collected, CollectError> {
+        let socket = socket()?;
         let timeout = ctx.command_timeout;
         let containers = get_json(&socket, "/containers/json?all=1", timeout).map_err(|e| connect_error(&socket, e))?;
         let summaries = containers.as_array().cloned().unwrap_or_default();
@@ -185,7 +191,7 @@ mod imp {
         Ok(container)
     }
 
-    fn connect_error(socket: &Path, err: io::Error) -> CollectError {
+    pub(crate) fn connect_error(socket: &Path, err: io::Error) -> CollectError {
         let path = socket.display();
         match err.kind() {
             io::ErrorKind::PermissionDenied => CollectError::Failed(format!(
@@ -198,7 +204,13 @@ mod imp {
         }
     }
 
-    fn get_json(socket: &Path, path: &str, timeout: Duration) -> io::Result<Value> {
+    pub(crate) fn get_json(socket: &Path, path: &str, timeout: Duration) -> io::Result<Value> {
+        let body = get_bytes(socket, path, timeout)?;
+        serde_json::from_slice(&body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    /// GET returning the raw body of a 2xx response.
+    pub(crate) fn get_bytes(socket: &Path, path: &str, timeout: Duration) -> io::Result<Vec<u8>> {
         let (status, body) = http_get(socket, path, timeout)?;
         if !(200..300).contains(&status) {
             let message = serde_json::from_slice::<Value>(&body)
@@ -207,7 +219,7 @@ mod imp {
                 .unwrap_or_else(|| format!("HTTP {status}"));
             return Err(io::Error::other(message));
         }
-        serde_json::from_slice(&body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        Ok(body)
     }
 
     fn http_get(socket: &Path, path: &str, timeout: Duration) -> io::Result<(u16, Vec<u8>)> {

@@ -168,6 +168,79 @@ impl Redactor {
         self.scrub_value(value).unwrap_or_else(|| value.to_string())
     }
 
+    /// Redacts credentials inside free text such as a log line, keeping
+    /// everything else, including spacing and punctuation, as it was.
+    ///
+    /// Handles `key=value` and `"key":"value"` pairs with secret-looking keys,
+    /// a bare secret key followed by its value (`password: hunter2`,
+    /// `Authorization: Bearer <token>`), URLs with credentials, and
+    /// token-shaped words.
+    pub fn text(&self, line: &str) -> String {
+        if !self.enabled {
+            return line.to_string();
+        }
+        let is_separator = |c: char| c.is_whitespace() || ",{}&;()[]".contains(c);
+        let mut out = String::with_capacity(line.len());
+        let mut pending = 0u8; // following words that are secret values
+        let mut rest = line;
+        while !rest.is_empty() {
+            let sep_len = rest.find(|c: char| !is_separator(c)).unwrap_or(rest.len());
+            out.push_str(&rest[..sep_len]);
+            rest = &rest[sep_len..];
+            if rest.is_empty() {
+                break;
+            }
+            let word_len = rest.find(is_separator).unwrap_or(rest.len());
+            let word = &rest[..word_len];
+            rest = &rest[word_len..];
+
+            if pending > 0 {
+                pending -= 1;
+                // "Authorization: Bearer <token>": keep the scheme, redact the token.
+                let scheme = matches!(word.to_ascii_lowercase().as_str(), "bearer" | "basic" | "token" | "digest");
+                if scheme && pending == 0 {
+                    out.push_str(word);
+                    pending = 1;
+                } else {
+                    out.push_str(REDACTED);
+                }
+                continue;
+            }
+            let (scrubbed, value_follows) = self.scrub_word(word);
+            out.push_str(&scrubbed);
+            if value_follows {
+                pending = 1;
+            }
+        }
+        out
+    }
+
+    /// Redacts one word of free text. Also returns whether the word is a bare
+    /// secret key whose value is the next word.
+    fn scrub_word(&self, word: &str) -> (String, bool) {
+        if let Some(pos) = word.find(['=', ':']) {
+            let (key, rest) = word.split_at(pos);
+            let (separator, value) = rest.split_at(1);
+            let name = key.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+            // `scheme://` is a URL, not a key; URLs are handled below.
+            if !name.is_empty() && !value.starts_with("//") && self.is_secret_name(name) {
+                let lead_len = value.len() - value.trim_start_matches(['"', '\'']).len();
+                let core = value[lead_len..].trim_end_matches(['"', '\'', '.', ':']);
+                if core.is_empty() {
+                    return (word.to_string(), true);
+                }
+                let trail = &value[lead_len + core.len()..];
+                return (format!("{key}{separator}{}{REDACTED}{trail}", &value[..lead_len]), false);
+            }
+        }
+        if let Some(flag) = word.strip_prefix('-') {
+            if self.is_secret_name(flag.trim_start_matches('-')) {
+                return (word.to_string(), true);
+            }
+        }
+        (self.value(word), false)
+    }
+
     /// Redacts secret-looking arguments in a command line.
     pub fn args(&self, args: &[String]) -> Vec<String> {
         if !self.enabled {
@@ -200,7 +273,9 @@ impl Redactor {
                     continue;
                 }
             }
-            out.push(self.value(arg));
+            // An argument can itself be a script (`sh -c '... api_key=...'`),
+            // so it gets the same treatment as free text.
+            out.push(self.text(arg));
         }
         out
     }
@@ -454,6 +529,37 @@ mod tests {
         // A secret-named flag followed by another flag redacts nothing.
         let args: Vec<String> = ["app", "--no-auth", "--verbose"].iter().map(|s| s.to_string()).collect();
         assert_eq!(r.args(&args), args);
+        // Secrets inside a script argument (found by a real capture of
+        // `sh -c '... api_key=...'`).
+        let args: Vec<String> = ["sh", "-c", "echo charge failed api_key=sk_live_abcdefghijklmnop; sleep 2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(r.args(&args)[2], "echo charge failed api_key=[REDACTED]; sleep 2");
+    }
+
+    #[test]
+    fn redacts_free_text() {
+        let r = redactor();
+        let cases = [
+            ("connecting with password=hunter2 to db", "connecting with password=[REDACTED] to db"),
+            (
+                r#"{"user":"bob","password":"hunter2","port":5432}"#,
+                r#"{"user":"bob","password":"[REDACTED]","port":5432}"#,
+            ),
+            ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig", "Authorization: Bearer [REDACTED]"),
+            ("login failed, password: hunter2 (attempt 3)", "login failed, password: [REDACTED] (attempt 3)"),
+            ("dial redis://:s3cret@redis:6379 refused", "dial redis://:[REDACTED]@redis:6379 refused"),
+            ("GET /hook?id=7&token=abc123 200", "GET /hook?id=7&token=[REDACTED] 200"),
+            ("using key ghp_abcdefghijklmnop1234 now", "using key [REDACTED] now"),
+            ("started --api-key s3cret --port 80", "started --api-key [REDACTED] --port 80"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(r.text(input), expected, "{input}");
+        }
+        // Ordinary log lines are untouched, whitespace included.
+        let plain = "2026-10-01T14:30:01Z  INFO  Ready to accept connections tcp:6379";
+        assert_eq!(r.text(plain), plain);
     }
 
     #[test]

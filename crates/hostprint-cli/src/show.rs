@@ -1,4 +1,4 @@
-use crate::style::{clip, pad, Style};
+use crate::style::{clip, pad, plural, Style};
 use crate::{App, ShowArgs};
 use anyhow::{bail, Result};
 use clap::ValueEnum;
@@ -19,19 +19,23 @@ pub enum SectionArg {
     Env,
     Runtimes,
     Files,
+    Logs,
     Collectors,
 }
 
 pub fn run(app: &App, args: ShowArgs) -> Result<ExitCode> {
     let snapshot = app.store.resolve(&args.snapshot)?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    print(&snapshot, args.section, args.json, &app.style)
+}
+
+pub fn print(snapshot: &Snapshot, section: Option<SectionArg>, json: bool, style: &Style) -> Result<ExitCode> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(snapshot)?);
         return Ok(ExitCode::SUCCESS);
     }
-    let style = &app.style;
-    let lines = match args.section {
-        None => overview(&snapshot, style),
-        Some(section) => full_section(&snapshot, section, style)?,
+    let lines = match section {
+        None => overview(snapshot, style),
+        Some(section) => full_section(snapshot, section, style)?,
     };
     for line in lines {
         println!("{line}");
@@ -51,7 +55,7 @@ fn row(style: &Style, label: &str, value: impl AsRef<str>) -> String {
     format!("  {}  {}", style.dim(&pad(label, 10)), value.as_ref())
 }
 
-fn overview(s: &Snapshot, style: &Style) -> Vec<String> {
+pub fn overview(s: &Snapshot, style: &Style) -> Vec<String> {
     let mut out = vec![format!("{} {}", style.bold("SNAPSHOT"), style.bold(&s.name))];
     out.push(row(style, "id", &s.id));
     let age = (chrono::Utc::now() - s.captured_at).num_seconds().max(0) as u64;
@@ -200,6 +204,31 @@ fn overview(s: &Snapshot, style: &Style) -> Vec<String> {
             out.push(file_line(f));
         }
     }
+    if let Some(logs) = &s.logs {
+        let errors: u32 = logs.sources.iter().map(|l| l.errors).sum();
+        out.push(heading(
+            style,
+            "LOGS",
+            &format!(
+                "{} since {} · {}",
+                plural(logs.sources.len() as u64, "source"),
+                logs.since.format("%Y-%m-%d %H:%M UTC"),
+                plural(errors, "error line")
+            ),
+        ));
+        let mut noisy: Vec<_> = logs.sources.iter().filter(|l| l.errors > 0).collect();
+        noisy.sort_by(|a, b| b.errors.cmp(&a.errors).then(a.name.cmp(&b.name)));
+        for src in noisy.iter().take(TOP_PROCESSES) {
+            let example = src.top_errors.first().map(|p| clip(&p.example, 70)).unwrap_or_default();
+            out.push(format!(
+                "  {}  {}  {}",
+                pad(&clip(&src.name, 28), 28),
+                style.red(&pad(&plural(src.errors, "error"), 11)),
+                style.dim(&example)
+            ));
+        }
+        out.push(style.dim("  hostprint show <snapshot> --section logs  prints the lines"));
+    }
 
     let problems: Vec<_> = s.capture.collectors.iter().filter(|c| c.status != CollectorStatus::Ok).collect();
     if !problems.is_empty() {
@@ -325,6 +354,26 @@ fn full_section(s: &Snapshot, section: SectionArg, style: &Style) -> Result<Vec<
             let Some(files) = &s.files else { bail!(missing("file data", "files")) };
             for f in files {
                 out.push(file_line(f).trim_start().to_string());
+            }
+        }
+        SectionArg::Logs => {
+            let Some(logs) = &s.logs else { bail!(missing("logs", "logs")) };
+            for src in &logs.sources {
+                out.push(format!(
+                    "{} {}",
+                    style.bold(&format!("{} ({})", src.name, src.kind)),
+                    style.dim(&format!(
+                        "{} · {} · {}{}",
+                        plural(src.total, "line"),
+                        plural(src.errors, "error"),
+                        plural(src.warnings, "warning"),
+                        if src.truncated { " · older lines not kept" } else { "" }
+                    ))
+                ));
+                for line in &src.lines {
+                    out.push(format!("  {line}"));
+                }
+                out.push(String::new());
             }
         }
         SectionArg::Collectors => {

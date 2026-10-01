@@ -6,9 +6,39 @@ improvements to Hostprint are improvements to its noise reduction.
 
 ## Building and testing
 
-Hostprint is a Rust workspace. v0.1 targets Linux; the code compiles
+Hostprint is a Rust workspace that targets Linux. The code compiles
 elsewhere, but collectors report "not supported" and the end-to-end tests
 only run on Linux.
+
+### With Docker (no Rust install, any OS)
+
+`scripts/dev.ps1` (Windows PowerShell) and `scripts/dev.sh` (Linux, macOS)
+run everything in a toolchain container. The `hostprint-dev` image is built
+on first use; Cargo's cache and build output live in Docker volumes, so later
+runs are fast.
+
+| Command              | Does |
+| -------------------- | ---- |
+| `check`              | `cargo fmt --check`, clippy with `-D warnings`, all tests: exactly what CI runs |
+| `test [args]`        | `cargo test --workspace [args]` |
+| `fmt`                | `cargo fmt --all` |
+| `build`              | static release binary in `dist/hostprint` |
+| `run <args>`         | the CLI, e.g. `run capture --name x`; snapshots persist in the `hostprint-home` volume and the Docker socket is mounted |
+| `demo`               | builds, then runs `examples/demo` against your Docker |
+| `shell`              | interactive shell in the toolchain container |
+| `cargo <args>`       | any cargo command |
+| `clean`              | removes the image and the cache volumes |
+
+```powershell
+.\scripts\dev.ps1 check
+.\scripts\dev.ps1 run diff healthy
+```
+
+Note that `run` executes inside a container, so it sees the container's
+processes and network rather than your machine's. That is fine for trying the
+CLI. To observe a real Linux host, run the `dist/hostprint` binary on it.
+
+### With a local Rust toolchain
 
 ```sh
 cargo build
@@ -17,16 +47,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
-CI runs all four. On macOS or Windows, test inside a Linux container:
+### Testing against real systems
 
-```sh
-docker run --rm -v "$PWD:/src" -w /src rust:1 cargo test --workspace
-```
-
-To try the binary against a real systemd, a container such as
-`jrei/systemd-ubuntu` started with `--privileged --cgroupns=host -v
-/sys/fs/cgroup:/sys/fs/cgroup:rw` works well. `examples/demo` exercises the
-Docker collector and the diff end to end.
+- **systemd and the journal:** a container such as `jrei/systemd-ubuntu`
+  started with `--privileged --cgroupns=host -v
+  /sys/fs/cgroup:/sys/fs/cgroup:rw` runs a real systemd. Copy
+  `dist/hostprint` in with `docker cp` and exercise the services and journal
+  collectors.
+- **Docker:** `dev demo` runs a stack, breaks it and diffs it; any container
+  with `/var/run/docker.sock` mounted can run the Docker collector.
 
 ## Layout
 
@@ -37,11 +66,15 @@ crates/
   hostprint-core/        Capture engine (parallel collectors) and config.toml
   hostprint-storage/     ~/.hostprint: snapshots, permissions, fingerprint key
   hostprint-diff/        Comparison rules and significance
-  hostprint-cli/         The `hostprint` binary: argument parsing and rendering
+  hostprint-cli/         The `hostprint` binary: arguments, rendering, Markdown
+                         reports, bundles, baselines
 docs/
   diff-rules.md          Every rule and its threshold
   snapshot-format.md     The documented, versioned file format
+docker/dev.Dockerfile    Toolchain image used by scripts/dev.*
+Dockerfile               Builds the static release binary (no Rust needed)
 examples/demo/           Reproducible incident for the README
+scripts/dev.ps1, dev.sh  Docker-based build, test and run
 ```
 
 Dependencies flow one way: `model` ← `collectors` ← `core` ← `cli`, with
@@ -56,7 +89,9 @@ crate added ends up in a binary people run on production machines.
 2. Write the collector in `hostprint-collectors/src/<name>.rs`. Read system
    files through `ctx.path("/proc/...")` so tests can use a fixture tree, run
    commands through `run_command` (it has a timeout and a pinned environment),
-   and pass any value that could hold a secret through `ctx.redactor`.
+   and pass any value that could hold a secret through `ctx.redactor`:
+   `pair` for name/value settings, `args` for command lines, `text` for log
+   lines and other free text.
 3. Return `CollectError::Unavailable` when the collector doesn't apply here and
    `CollectError::Failed` when it should have worked; add `notes` for partial
    results. Never panic, never block without a timeout.

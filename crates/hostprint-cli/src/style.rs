@@ -25,6 +25,11 @@ impl Style {
         Style { color: terminal && !disabled && !no_color }
     }
 
+    /// No colour, for files and reports.
+    pub fn plain() -> Style {
+        Style { color: false }
+    }
+
     fn paint(&self, code: &str, s: &str) -> String {
         if self.color {
             format!("\x1b[{code}m{s}\x1b[0m")
@@ -71,6 +76,12 @@ pub fn pad(s: &str, width: usize) -> String {
     } else {
         format!("{s}{}", " ".repeat(width - len))
     }
+}
+
+/// "1 error", "2 errors".
+pub fn plural(n: impl Into<u64>, word: &str) -> String {
+    let n = n.into();
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
 }
 
 /// Shortens `s` to at most `max` chars, marking the cut with `…`.

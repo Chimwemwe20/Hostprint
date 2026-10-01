@@ -15,31 +15,35 @@ hostprint diff healthy broken
 ```text
 HOSTPRINT DIFF
 
-  healthy  2026-10-01 14:36:09 UTC  df46967e8875
-→ broken   2026-10-01 14:36:46 UTC  df46967e8875  (36s later)
+  healthy  2026-10-01 16:49:24 UTC  adf5dcdb295c
+→ broken   2026-10-01 16:50:01 UTC  adf5dcdb295c  (37s later)
 
-10 changes: 3 high · 3 medium · 4 low
+12 changes: 3 high · 4 medium · 5 low
 
 HIGH
   CONTAINERS
     hostprint-demo-redis-1  health         healthy → unhealthy
-    hostprint-demo-redis-1  restart count  0 → 7  (+7)
+    hostprint-demo-redis-1  restart count  0 → 8  (+8)
     hostprint-demo-redis-1  state          running → restarting
 
 MEDIUM
   APPLICATION
-    app                        commit  645cb65 Release 1.4.0 → 7d9cf16 Raise DATABASE_POOL_SIZE to 50
+    app                        commit         507c111 Release 1.4.0 → 497bb90 Raise DATABASE_POOL_SIZE to 50
   CONFIGURATION
-    DATABASE_POOL_SIZE (.env)  value   10 → 50
-    JWT_SECRET (.env)          secret  fp 247db897 → fp 1671d955  (value redacted)
+    DATABASE_POOL_SIZE (.env)  value          10 → 50
+    JWT_SECRET (.env)          secret         fp d3129725 → fp 9e9e38a1  (value redacted)
+  LOGS
+    hostprint-demo-redis-1     docker errors  0 → 8  (+8, last 10m)
 
 LOW
   RESOURCES
-    Memory available                      2.8 GiB → 1.7 GiB  (-38%, 47% of total)
+    Memory available                          2.8 GiB → 1.7 GiB  (-38%, 47% of total)
   CONTAINERS
-    hostprint-demo-api-1    container ID  f2f5e517dcd0 → 90ccd09a3fe2
-    hostprint-demo-hog-1    container     + running · python:3.13-alpine
-    hostprint-demo-redis-1  container ID  a47ffaa16467 → 5c0350369650
+    hostprint-demo-api-1    container ID      0977b9201a98 → 830e201f9d45
+    hostprint-demo-hog-1    container         + running · python:3.13-alpine
+    hostprint-demo-redis-1  container ID      e07bf372278c → 61b4144e6a6d
+  LOGS
+    hostprint-demo-redis-1  docker new error  + FATAL: cannot open append-only file  (×8)
 ```
 
 This is unedited output from [`examples/demo`](examples/demo), a
@@ -67,62 +71,104 @@ point-in-time evidence and makes that evidence comparable.
 | Application    | Git branch, commit, dirty state and changed file names; versions of Node.js, Python, Java, Go, Rust, Ruby, PHP, .NET, Deno, Bun, Elixir, Erlang, Docker, PostgreSQL, MySQL, Redis, nginx, OpenSSL, Git |
 | Configuration  | Environment variables and dotenv files, with secrets redacted |
 | Files          | Size, mtime, mode, owner and SHA-256 of files you choose |
+| Logs (opt-in)  | Recent systemd journal warnings and errors, Docker container output, log files you choose; redacted and bounded |
 
 A capture typically takes under a second (collectors run in parallel), and a
 snapshot is tens to hundreds of kilobytes.
 
 ## Install
 
-Hostprint v0.1 supports Linux. It is tested on x86_64; ARM64 builds from the
-same code but has not been tested yet. From source, with a Rust toolchain:
+Hostprint supports Linux. It is tested on x86_64; ARM64 builds from the same
+code but has not been tested yet.
+
+**With Docker, no Rust needed.** This builds a static binary into `dist/`:
 
 ```sh
-git clone <this repository> hostprint
-cd hostprint
+git clone <this repository> hostprint && cd hostprint
+docker build --target binary --output dist .
+sudo install dist/hostprint /usr/local/bin/
+```
+
+**With a Rust toolchain:**
+
+```sh
 cargo install --path crates/hostprint-cli
 ```
 
-The release build is a single binary of about 3 MB; built for
-`x86_64-unknown-linux-musl` it is fully static. There are no published
-releases yet. `.github/workflows/release.yml` is set up to attach static
-x86_64 and ARM64 binaries to a GitHub Release when a `v*` tag is pushed.
+The binary is about 3.5 MB and, built for musl as above, fully static. There
+are no published releases yet; `.github/workflows/release.yml` is set up to
+attach static x86_64 and ARM64 binaries to a GitHub Release when a `v*` tag is
+pushed.
 
 Run `hostprint doctor` to see what it can observe on your machine.
 
 ## Usage
 
 ```text
-hostprint capture [--name NAME] [--repo DIR] [--env-file FILE] [--file PATH] [--json] [--force]
+hostprint capture  [--name NAME] [--logs-since 30m] [--repo DIR] [--env-file FILE] [--file PATH]
+                   [--only LIST] [--skip LIST] [--json] [--force]
 hostprint list
-hostprint show NAME [--section processes|ports|interfaces|disks|services|containers|env|runtimes|files|collectors] [--json]
-hostprint diff FROM [TO] [--all] [--min LEVEL] [--fail-on LEVEL] [--json]
-hostprint delete NAME
+hostprint show     NAME [--section processes|ports|interfaces|disks|services|containers|env|runtimes|files|logs|collectors] [--json]
+hostprint diff     FROM [TO] [--format text|json|markdown] [--all] [--min LEVEL] [--fail-on LEVEL]
+hostprint bundle   [SNAPSHOT] [--against SNAPSHOT] [--output FILE]
+hostprint baseline create NAME [--from SNAPSHOT] | list | show NAME | delete NAME
+hostprint check    BASELINE [--format ...] [--fail-on LEVEL]
+hostprint export   NAME [--output FILE]
+hostprint delete   NAME
 hostprint doctor
 ```
 
 - **Compare against now.** `hostprint diff healthy` captures the current state
   (without saving it) and compares.
 - **Compare across machines.** Snapshot names and file paths are
-  interchangeable: `hostprint diff healthy ./web-2.hp`.
-- **Script it.** `--json` on `capture`, `show`, `list` and `diff` emits
-  machine-readable output; `diff --fail-on medium` exits with status 1 when
-  something at or above MEDIUM changed, for CI and health checks.
+  interchangeable. `hostprint export web-2` writes `web-2.hostprint`, which
+  anyone can pass to `diff` or `show`.
+- **Include logs.** `--logs-since 30m` adds recent journal warnings and
+  errors, container output and configured log files. The diff then reports
+  error bursts and error messages that weren't there before.
+- **Script it.** `--json` everywhere, `--format markdown` for tickets and pull
+  requests, and `--fail-on medium` exits with status 1 when something at or
+  above MEDIUM changed.
 - **Record your application.** `--repo` points the Git collector at your
   deployment, `--env-file` records a dotenv file, `--file` fingerprints a
-  config file. All three can be set permanently in `config.toml`.
+  config file. All of these can be set permanently in `config.toml`.
 
-Exit status: `0` success, `1` `--fail-on` threshold met, `2` error.
+Exit status: `0` success, `1` threshold met (`--fail-on`, or `check`'s default
+of MEDIUM), `2` error.
+
+### Baselines and checks
+
+Record a known-good state once, then compare against it whenever you need to:
+
+```sh
+hostprint baseline create production --logs-since 30m
+hostprint check production          # exits 1 if anything at MEDIUM or above changed
+```
+
+### Incident bundles
+
+```sh
+hostprint bundle broken --against healthy
+```
+
+writes `broken-20261001-165001.tar.gz` with `snapshot.json`, `baseline.json`,
+`diff.json`, a Markdown `report.md`, the collected `logs/`, a `manifest.json`,
+and a `checksums.sha256` you can verify with `sha256sum -c`. It is ready to
+attach to a GitHub issue or support ticket. With no snapshot named,
+`hostprint bundle` captures the system first, which makes it a one-command
+support bundle.
 
 ## How changes are classified
 
 Every difference goes through a deterministic rule that assigns HIGH, MEDIUM,
-LOW or INFO, and the rule's id is included in `--json` output. Values that
-change constantly (PIDs, uptime, timestamps, CPU percentages, small memory and
-disk fluctuations, ephemeral ports, virtual interfaces, short-lived and
-interactive processes, terminal variables) are suppressed or demoted to INFO,
-so two captures of an unchanged machine produce no differences.
+LOW or INFO, and the rule's id is included in `--json` and Markdown output.
+Values that change constantly (PIDs, uptime, timestamps, CPU percentages,
+small memory and disk fluctuations, ephemeral ports, virtual interfaces,
+short-lived and interactive processes, terminal variables) are suppressed or
+demoted to INFO, so two captures of an unchanged machine produce no
+differences.
 
-Hostprint shows evidence ("restart count 0 → 7"), not conclusions. The full
+Hostprint shows evidence ("restart count 0 → 8"), not conclusions. The full
 rule list with every threshold is in [docs/diff-rules.md](docs/diff-rules.md).
 
 ## Privacy and secrets
@@ -130,16 +176,18 @@ rule list with every threshold is in [docs/diff-rules.md](docs/diff-rules.md).
 - Secrets are redacted **before** anything is stored: by name (`*PASSWORD*`,
   `*SECRET*`, `*TOKEN*`, `*KEY*`, ...), and by shape (URLs with passwords,
   `ghp_…`/`sk_live_…`/`AKIA…` tokens, JWTs, PEM blocks, long random strings).
-  This covers environment variables, dotenv files and process command lines.
+  This covers environment variables, dotenv files, process command lines
+  (including inline scripts) and every collected log line.
 - Redacted values keep a keyed fingerprint (HMAC-SHA256 with a per-install
   key), so a diff can say *a secret changed* without anyone being able to
   recover or brute-force it from the snapshot.
-- Hostprint records metadata, not content: hashes of config files, names of
-  changed files, never source code or file contents.
-- Snapshots are stored in `~/.hostprint` with `0700`/`0600` permissions.
-  Nothing leaves the machine unless you copy it.
-- Root is never required. Without it, other users' process details are
-  partial, and the capture says so.
+- Hostprint records metadata by default: hashes of config files, names of
+  changed files, never source code. Logs, the one kind of content, are
+  opt-in and bounded.
+- Snapshots, baselines, exports and bundles are written with `0600`
+  permissions. Nothing leaves the machine unless you copy it.
+- Root is never required. Without it, other users' process details and the
+  system journal are partial, and the capture says so.
 
 Details and limits are in [SECURITY.md](SECURITY.md).
 
@@ -150,6 +198,10 @@ Details and limits are in [SECURITY.md](SECURITY.md).
 ```toml
 [hostprint]
 redact_secrets = true
+collect_logs = false         # true: every capture includes [logs]
+
+[collectors]
+disable = ["runtimes"]       # turn collectors off
 
 [files]
 paths = ["/etc/nginx/nginx.conf", "/etc/myapp/config.toml"]
@@ -157,6 +209,13 @@ paths = ["/etc/nginx/nginx.conf", "/etc/myapp/config.toml"]
 [env]
 capture_process = true
 files = ["/srv/myapp/.env"]
+
+[logs]
+since = "30m"
+journal = true
+docker = true
+files = ["/var/log/myapp/app.log"]
+lines = 50                   # kept per source
 
 [redact]
 patterns = ["INTERNAL_"]     # extra name fragments to treat as secret
@@ -178,21 +237,29 @@ silently appearing empty. See [docs/snapshot-format.md](docs/snapshot-format.md)
 
 ## Status and roadmap
 
-v0.1 (this release) covers the core loop on Linux: capture, list, show, diff,
-doctor, JSON output and secret redaction.
+Done:
 
-Planned next:
+- **v0.1:** capture, list, show, diff, doctor, JSON output, secret redaction.
+- **v0.2:** incident bundles, journal / Docker / file log collection,
+  Markdown reports, baselines and `check`, configurable collectors, export.
 
-- **v0.2:** incident bundles (`hostprint bundle`), system and Docker log
-  collection, Markdown reports, baselines (`hostprint baseline` /
-  `hostprint check`), configurable collectors.
-- **v0.3:** watch mode and a terminal UI, custom diff policies, macOS
-  support, capture over SSH.
+Next, **v0.3:** watch mode and a terminal UI, custom diff policies, macOS
+support, capture over SSH.
 
-## Contributing
+## Developing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the workspace layout, how to add a
-collector or a diff rule, and how to test on non-Linux machines.
+No local Rust toolchain is needed. `scripts/dev.ps1` (Windows) and
+`scripts/dev.sh` (Linux, macOS) run everything in Docker:
+
+```sh
+./scripts/dev.sh check                  # fmt, clippy and tests, as CI runs them
+./scripts/dev.sh run capture --name x   # try the CLI
+./scripts/dev.sh build                  # static binary in dist/
+./scripts/dev.sh demo                   # the README demo, against your Docker
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the workspace layout and how to add
+a collector or a diff rule.
 
 ## License
 

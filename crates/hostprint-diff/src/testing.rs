@@ -89,6 +89,23 @@ pub fn secret(name: &str, fingerprint: &str) -> EnvVar {
     }
 }
 
+/// A log source whose error lines follow `errors` (pattern, count) pairs.
+pub fn log_source(kind: &str, name: &str, total: u32, errors: &[(&str, u32)]) -> LogSource {
+    LogSource {
+        kind: kind.into(),
+        name: name.into(),
+        total,
+        errors: errors.iter().map(|e| e.1).sum(),
+        warnings: 0,
+        top_errors: errors
+            .iter()
+            .map(|(p, n)| LogPattern { pattern: p.to_string(), count: *n, example: p.replace('#', "42") })
+            .collect(),
+        lines: vec![],
+        truncated: false,
+    }
+}
+
 fn report(name: &str) -> CollectorReport {
     CollectorReport {
         name: name.into(),
@@ -132,6 +149,7 @@ pub fn baseline() -> Snapshot {
                 "runtimes",
                 "environment",
                 "files",
+                "logs",
             ]
             .iter()
             .map(|n| report(n))
@@ -278,6 +296,10 @@ pub fn baseline() -> Snapshot {
             gid: Some(0),
             error: None,
         }]),
+        logs: Some(Logs {
+            since: at(-1800),
+            sources: vec![log_source("docker", "redis", 120, &[]), log_source("journal", "nginx.service", 3, &[])],
+        }),
     }
 }
 
@@ -290,6 +312,10 @@ pub fn later(base: &Snapshot, secs: i64) -> Snapshot {
     s.captured_at = base.captured_at + Duration::seconds(secs);
     if let Some(h) = &mut s.host {
         h.uptime_seconds = h.uptime_seconds.map(|u| u + secs as u64);
+    }
+    // Same --logs-since window, so it moves with the capture time.
+    if let Some(l) = &mut s.logs {
+        l.since += Duration::seconds(secs);
     }
     s
 }

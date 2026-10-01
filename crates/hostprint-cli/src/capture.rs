@@ -1,12 +1,11 @@
 use crate::style::{pad, tilde, Style};
-use crate::{App, CaptureArgs};
+use crate::{App, CaptureArgs, CaptureOptions};
 use anyhow::{bail, Result};
-use hostprint_collectors::{default_collectors, Collector};
+use hostprint_collectors::Collector;
 use hostprint_core::Config;
 use hostprint_model::format;
 use hostprint_model::{CollectorStatus, Snapshot};
-use hostprint_storage::{validate_name, StorageError};
-use std::path::PathBuf;
+use hostprint_storage::{validate_name, Kind, StorageError};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -17,12 +16,10 @@ pub fn run(app: &App, args: CaptureArgs) -> Result<ExitCode> {
         // Fail before spending seconds capturing.
         validate_name(&name)?;
         if app.store.exists(&name) && !args.force {
-            bail!(StorageError::AlreadyExists(name));
+            bail!(StorageError::AlreadyExists { kind: Kind::Snapshot, name });
         }
     }
-    let mut ctx = app.capture_context(&config, args.repo.clone())?;
-    ctx.env_files.extend(args.env_files.iter().cloned());
-    ctx.file_paths.extend(args.files.iter().cloned());
+    let (ctx, collectors) = app.prepare_capture(&config, &args.options)?;
 
     // With --json, stdout carries the snapshot and everything else goes to stderr.
     let (style, to_stderr) = if args.json { (app.err_style, true) } else { (app.style, false) };
@@ -33,7 +30,6 @@ pub fn run(app: &App, args: CaptureArgs) -> Result<ExitCode> {
             println!("{line}");
         }
     };
-    let collectors = default_collectors();
     if !args.quiet {
         say(&style.bold("Capturing system state..."));
         say("");
@@ -69,11 +65,11 @@ pub fn run(app: &App, args: CaptureArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Captures the live system for comparison, without saving it.
-pub fn live(app: &App, config: &Config, repo: Option<PathBuf>) -> Result<Snapshot> {
-    eprintln!("{}", app.err_style.dim("Capturing current state for comparison (not saved)..."));
-    let ctx = app.capture_context(config, repo)?;
-    Ok(hostprint_core::capture("now", &ctx, &default_collectors()))
+/// Captures the live system without saving it, announcing it on stderr.
+pub fn live(app: &App, config: &Config, options: &CaptureOptions, name: &str, purpose: &str) -> Result<Snapshot> {
+    eprintln!("{}", app.err_style.dim(&format!("Capturing current state {purpose}...")));
+    let (ctx, collectors) = app.prepare_capture(config, options)?;
+    Ok(hostprint_core::capture(name, &ctx, &collectors))
 }
 
 /// One line per collector, in display order, plus indented notes.
@@ -96,6 +92,6 @@ pub fn report_lines(snapshot: &Snapshot, collectors: &[Arc<dyn Collector>], styl
     lines
 }
 
-fn default_name() -> String {
+pub fn default_name() -> String {
     chrono::Utc::now().format("snap-%Y%m%d-%H%M%S").to_string()
 }
